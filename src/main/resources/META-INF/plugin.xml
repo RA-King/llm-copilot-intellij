@@ -5,18 +5,73 @@
     <vendor email="llmcopilot@example.com" url="https://github.com/llm-copilot">LLM Copilot</vendor>
 
     <description><![CDATA[
-        AI-powered inline code completions using any LLM provider.<br/>
-        Supports Ollama, OpenAI, Anthropic, Mistral, Groq, OpenRouter, LM Studio, Claude Code, and custom endpoints.<br/><br/>
-        Features:<br/>
+        <p>
+            <b>LLM Copilot</b> brings inline AI code completion, an in-editor chat panel,
+            and a set of code actions to IntelliJ IDEA &mdash; backed by whichever language
+            model you choose, including models running entirely on your own machine.
+        </p>
+
+        <h3>Completions that understand where you are</h3>
+        <p>
+            As you type, a suggestion appears inline in grey. Press <b>Tab</b> to accept it
+            or <b>Esc</b> to dismiss. Rather than prompting blindly, the plugin works out
+            what the caret is sitting inside &mdash; a class body, an interface, an enum, a
+            function body, or top level &mdash; and asks for the appropriate thing: a
+            constructor for an empty class, accessors for a class that already has fields,
+            the next case for an enum.
+        </p>
+
+        <h3>No repeated code</h3>
+        <p>
+            Language models often re-emit code that is already on screen. Every suggestion
+            passes three filters first: echoed prefixes are stripped, whole blocks that
+            already exist above or below the caret are rejected, and individual repeated
+            lines are dropped. If most of a suggestion is material you already have,
+            nothing is shown at all.
+        </p>
+
+        <h3>Documentation on request</h3>
+        <p>
+            Type <code>//</code> or <code>/**</code> on a line of its own above a
+            declaration and a documentation comment is drafted for it, in the idiom of the
+            language &mdash; <code>#</code> for Python and Ruby, <code>///</code> for Rust,
+            <code>//</code> for Go, block comments elsewhere. The result appears in a
+            preview dialog: <b>nothing is written to your file until you accept it</b>, and
+            the insert is a single undoable action.
+        </p>
+
+        <h3>Everything else</h3>
         <ul>
-            <li>Ghost text inline completions (Tab to accept)</li>
-            <li>Smart doc comment generation (type // or /** above a declaration)</li>
-            <li>AI Chat panel</li>
-            <li>Explain, Fix, Refactor, Generate Tests actions</li>
-            <li>Generate Constructor, Getters/Setters, Interface implementations</li>
-            <li>Selection context actions (Ctrl+Space on selection)</li>
-            <li>Commit message generation</li>
+            <li><b>Chat panel</b> &mdash; a tool window that can see the current file and selection</li>
+            <li><b>Inline chat</b> &mdash; ask about the code at the caret without leaving the editor</li>
+            <li><b>Explain</b>, <b>Fix</b> and <b>Refactor</b> a selection, the last with your own instruction</li>
+            <li><b>Generate unit tests</b>, optionally pinned to a specific framework</li>
+            <li><b>Generate a constructor</b>, or getters and setters one field at a time</li>
+            <li><b>Implement interface methods</b> from a signature</li>
+            <li><b>Write a commit message</b> from the current diff</li>
         </ul>
+
+        <h3>Bring your own model</h3>
+        <p>
+            Thirteen providers are supported. Ollama and LM Studio run entirely locally, so
+            <b>your code never leaves your machine</b> and no account is required:
+        </p>
+        <ul>
+            <li><b>Local</b> &mdash; Ollama, LM Studio, or a Claude Code proxy (port and path auto-discovered)</li>
+            <li><b>Hosted</b> &mdash; OpenAI, Anthropic, Google Gemini, DeepSeek, xAI Grok, Mistral, Groq, OpenRouter, Azure OpenAI</li>
+            <li><b>Custom</b> &mdash; any OpenAI-compatible endpoint</li>
+        </ul>
+        <p>
+            Configure under <b>Settings &rarr; Tools &rarr; LLM Copilot</b>. The defaults
+            assume a local Ollama instance, so a local setup needs no configuration at all.
+            <b>LLM Copilot: Test Connection</b> confirms the provider is reachable.
+        </p>
+
+        <p>
+            <em>Note:</em> API keys for hosted providers are stored in the IDE's plugin
+            settings file rather than the OS keychain. Prefer a local provider on shared
+            machines.
+        </p>
     ]]></description>
 
     <idea-version since-build="261" />
