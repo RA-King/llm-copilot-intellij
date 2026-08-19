@@ -4,7 +4,7 @@ An IntelliJ IDEA plugin that brings inline AI code completion, an in-editor chat
 panel, and a set of code actions to any LLM you choose — including models running
 entirely on your own machine.
 
-Version 2.1.0 · IntelliJ IDEA 2026.1+ · Java 17 · MIT licensed
+Version 0.0.01 · IntelliJ IDEA 2026.1+ · Java 17 · MIT licensed
 
 [![CI](https://github.com/RA-King/llm-copilot-intellij/actions/workflows/ci.yml/badge.svg)](https://github.com/RA-King/llm-copilot-intellij/actions/workflows/ci.yml)
 
@@ -106,7 +106,7 @@ Connection** reports which combination answered.
 
 1. Build the ZIP (below), or take one from a release.
 2. **Settings → Plugins → ⚙ → Install Plugin from Disk…**
-3. Select `build/distributions/llm-copilot-intellij-2.1.0.zip`
+3. Select `build/distributions/llm-copilot-intellij-0.0.01.zip`
 4. Restart the IDE.
 
 ### Point it at a model
@@ -198,7 +198,7 @@ chmod +x gradlew
 ./gradlew buildPlugin
 ```
 
-Output: `build/distributions/llm-copilot-intellij-2.1.0.zip`
+Output: `build/distributions/llm-copilot-intellij-0.0.01.zip`
 
 The build compiles against your **locally installed IntelliJ IDEA** rather than
 downloading a 1 GB SDK. It probes the usual install locations; if yours is
@@ -322,8 +322,8 @@ Both run on `ubuntu-latest` with JDK 21 and cache the Gradle home, so the platfo
 download is paid for once rather than per run. Cutting a release is:
 
 ```bash
-git tag v2.1.0
-git push origin v2.1.0
+git tag v0.0.01
+git push origin v0.0.01
 ```
 
 ---
