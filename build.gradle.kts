@@ -19,8 +19,12 @@ tasks.withType<JavaCompile>().configureEach {
     options.release.set(17)
 }
 
-// ── Locate installed IntelliJ IDEA ───────────────────────────────────────────
-val ideaPath: String = when {
+// ── Locate an IntelliJ IDEA to build against ─────────────────────────────────
+// A local installation is preferred: it avoids a ~1 GB SDK download. CI runners
+// have none, so null here means "fall back to the downloadable Community SDK".
+// Pass -PignoreLocalIde to force the CI path on a developer machine.
+val ideaPath: String? = when {
+    project.hasProperty("ignoreLocalIde")   -> null
     project.hasProperty("ideaPath")         -> project.property("ideaPath").toString()
     project.hasProperty("intellijIdeaPath") -> project.property("intellijIdeaPath").toString()
     file("/Applications/IntelliJ IDEA 2026.1.app").exists()  -> "/Applications/IntelliJ IDEA 2026.1.app"
@@ -33,17 +37,25 @@ val ideaPath: String = when {
         "C:/Program Files/JetBrains/IntelliJ IDEA 2026.1"
     file("C:/Program Files/JetBrains/IntelliJ IDEA").exists() ->
         "C:/Program Files/JetBrains/IntelliJ IDEA"
-    else -> throw GradleException(
-        "\nCannot find IntelliJ IDEA. Add to gradle.properties:\n" +
-        "  intellijIdeaPath=/Applications/IntelliJ IDEA 2026.1.app\n"
-    )
+    else -> null
 }
 
-println("[LLM Copilot] Building against: $ideaPath")
+// Version used only when no local installation is available (CI). Override with
+// -PplatformVersion=... or a platformVersion entry in gradle.properties.
+val platformVersion: String = providers.gradleProperty("platformVersion").getOrElse("2026.1")
+
+if (ideaPath != null) {
+    println("[LLM Copilot] Building against local install: $ideaPath")
+} else {
+    println("[LLM Copilot] No local IntelliJ IDEA found — downloading IntelliJ IDEA $platformVersion")
+}
 
 dependencies {
     intellijPlatform {
-        local(ideaPath)
+        // useInstaller = false resolves the platform zip from JetBrains' Maven
+        // repository instead of an OS-specific installer, which is what works on CI.
+        if (ideaPath != null) local(ideaPath)
+        else intellijIdea(platformVersion) { useInstaller = false }
         pluginVerifier()
         zipSigner()
     }

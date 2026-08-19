@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+# A newer push to the same branch supersedes an in-flight run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+    # The first run downloads the IntelliJ Platform (~1 GB); later runs hit the cache.
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      # The IntelliJ Platform Gradle plugin rejects any JVM newer than 21 during
+      # settings evaluation. The wrapper skips its own JDK search when JAVA_HOME
+      # is already 21 or older, so setting it here is enough.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # No IDE is installed on the runner, so the build falls back to the
+      # platform distribution from JetBrains' Maven repository automatically.
+      - name: Compile
+        run: ./gradlew compileJava
+
+      - name: Test
+        run: ./gradlew test
+
+      - name: Build plugin
+        run: ./gradlew buildPlugin
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: |
+            build/reports/tests/test
+            build/test-results/test
+          retention-days: 14
+
+      - name: Upload plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-copilot-plugin
+          path: build/distributions/*.zip
+          if-no-files-found: error
+          retention-days: 30
