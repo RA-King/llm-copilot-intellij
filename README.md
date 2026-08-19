@@ -6,6 +6,8 @@ entirely on your own machine.
 
 Version 2.1.0 · IntelliJ IDEA 2026.1+ · Java 17 · MIT licensed
 
+[![CI](https://github.com/RA-King/llm-copilot-intellij/actions/workflows/ci.yml/badge.svg)](https://github.com/RA-King/llm-copilot-intellij/actions/workflows/ci.yml)
+
 ---
 
 ## What it does
@@ -234,6 +236,17 @@ org.gradle.java.home=/Applications/IntelliJ IDEA 2026.1.app/Contents/jbr/Content
 | `./gradlew verifyPlugin` | Run JetBrains' plugin compatibility verifier. |
 | `./gradlew clean` | Delete build output. |
 
+### Building without a local IDE
+
+If no IntelliJ installation is found, the build falls back to downloading the
+IntelliJ Platform distribution from JetBrains' Maven repository — roughly 1 GB on
+first use, cached afterwards. This is how CI builds.
+
+| Property | Effect |
+|---|---|
+| `-PignoreLocalIde` | Ignore any local install and use the downloaded platform. Reproduces CI locally. |
+| `-PplatformVersion=2026.1` | Which platform version to download. Ignored when a local install is used. |
+
 ---
 
 ## Tests
@@ -293,6 +306,25 @@ to paste into settings.
 
 **The build fails complaining about the JDK version.** Something is bypassing the
 wrapper's JDK 21 detection. Set `org.gradle.java.home` explicitly.
+
+---
+
+## Continuous integration
+
+Two GitHub Actions workflows live in `.github/workflows`:
+
+| Workflow | Trigger | Does |
+|---|---|---|
+| `ci.yml` | push / PR to `main` or `develop`, or manually | Validates the wrapper, compiles, runs the tests, builds the ZIP, and uploads the test report and plugin as artifacts. |
+| `release.yml` | pushing a `v*` tag, or manually | Runs the tests, builds the ZIP, and publishes a GitHub release with generated notes and the ZIP attached. |
+
+Both run on `ubuntu-latest` with JDK 21 and cache the Gradle home, so the platform
+download is paid for once rather than per run. Cutting a release is:
+
+```bash
+git tag v2.1.0
+git push origin v2.1.0
+```
 
 ---
 
