@@ -1,0 +1,190 @@
+<idea-plugin>
+    <id>com.llmcopilot</id>
+    <name>LLM Copilot</name>
+    <version>2.0.0</version>
+    <vendor email="llmcopilot@example.com" url="https://github.com/llm-copilot">LLM Copilot</vendor>
+
+    <description><![CDATA[
+        AI-powered inline code completions using any LLM provider.<br/>
+        Supports Ollama, OpenAI, Anthropic, Mistral, Groq, OpenRouter, LM Studio, Claude Code, and custom endpoints.<br/><br/>
+        Features:<br/>
+        <ul>
+            <li>Ghost text inline completions (Tab to accept)</li>
+            <li>Smart doc comment generation (type // or /** above a declaration)</li>
+            <li>AI Chat panel</li>
+            <li>Explain, Fix, Refactor, Generate Tests actions</li>
+            <li>Generate Constructor, Getters/Setters, Interface implementations</li>
+            <li>Selection context actions (Ctrl+Space on selection)</li>
+            <li>Commit message generation</li>
+        </ul>
+    ]]></description>
+
+    <idea-version since-build="261" />
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.lang</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+
+        <!-- Inline completion -->
+        <editorFactoryListener
+            implementation="com.llmcopilot.completion.LLMEditorFactoryListener"/>
+
+        <!-- Tool window: AI Chat -->
+        <toolWindow
+            id="LLM Copilot"
+            secondary="false"
+            anchor="right"
+            factoryClass="com.llmcopilot.chat.LLMChatToolWindowFactory"
+            icon="/icons/llmcopilot.svg"/>
+
+        <!-- Settings -->
+        <applicationService
+            serviceInterface="com.llmcopilot.settings.LLMCopilotSettings"
+            serviceImplementation="com.llmcopilot.settings.LLMCopilotSettings"/>
+        <applicationConfigurable
+            parentId="tools"
+            instance="com.llmcopilot.settings.LLMCopilotConfigurable"
+            id="com.llmcopilot.settings"
+            displayName="LLM Copilot"/>
+
+        <!-- Status bar widget -->
+        <statusBarWidgetFactory
+            id="LLMCopilotStatusBar"
+            implementation="com.llmcopilot.ui.LLMStatusBarWidgetFactory"
+            order="first"/>
+
+        <!-- Notification group -->
+        <notificationGroup
+            id="LLM Copilot"
+            displayType="BALLOON"/>
+
+    </extensions>
+
+    <actions>
+        <!-- Trigger inline completion -->
+        <action id="LLMCopilot.TriggerCompletion"
+                class="com.llmcopilot.actions.TriggerCompletionAction"
+                text="Trigger LLM Completion"
+                description="Manually trigger LLM ghost text completion">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift SPACE"/>
+        </action>
+
+        <!-- Open AI Chat -->
+        <action id="LLMCopilot.OpenChat"
+                class="com.llmcopilot.actions.OpenChatAction"
+                text="Open LLM Chat"
+                description="Open the AI chat panel">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt I"/>
+        </action>
+
+        <!-- Inline chat -->
+        <action id="LLMCopilot.InlineChat"
+                class="com.llmcopilot.actions.InlineChatAction"
+                text="LLM Copilot: Inline Chat"
+                description="Ask the AI about the current code context">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl I"/>
+        </action>
+
+        <!-- Explain code -->
+        <action id="LLMCopilot.ExplainCode"
+                class="com.llmcopilot.actions.ExplainCodeAction"
+                text="LLM Copilot: Explain Code"
+                description="Explain selected code">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift E"/>
+        </action>
+
+        <!-- Fix code -->
+        <action id="LLMCopilot.FixCode"
+                class="com.llmcopilot.actions.FixCodeAction"
+                text="LLM Copilot: Fix Code"
+                description="Fix bugs in selected code"/>
+
+        <!-- Refactor -->
+        <action id="LLMCopilot.RefactorCode"
+                class="com.llmcopilot.actions.RefactorCodeAction"
+                text="LLM Copilot: Refactor Code"
+                description="Refactor selected code with a custom instruction">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift R"/>
+        </action>
+
+        <!-- Generate doc comment -->
+        <action id="LLMCopilot.GenerateDocComment"
+                class="com.llmcopilot.actions.GenerateDocCommentAction"
+                text="LLM Copilot: Generate Doc Comment"
+                description="Generate documentation comment for the declaration at cursor">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift D"/>
+        </action>
+
+        <!-- Generate tests -->
+        <action id="LLMCopilot.GenerateTests"
+                class="com.llmcopilot.actions.GenerateTestsAction"
+                text="LLM Copilot: Generate Unit Tests"
+                description="Generate unit tests for selected code">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift T"/>
+        </action>
+
+        <!-- Generate constructor -->
+        <action id="LLMCopilot.GenerateConstructor"
+                class="com.llmcopilot.actions.GenerateConstructorAction"
+                text="LLM Copilot: Generate Constructor"
+                description="Generate constructor for the current class"/>
+
+        <!-- Generate getters/setters -->
+        <action id="LLMCopilot.GenerateGettersSetters"
+                class="com.llmcopilot.actions.GenerateGettersSettersAction"
+                text="LLM Copilot: Generate Getters &amp; Setters"
+                description="Generate getter and setter methods one field at a time"/>
+
+        <!-- Implement interface -->
+        <action id="LLMCopilot.ImplementInterface"
+                class="com.llmcopilot.actions.ImplementInterfaceAction"
+                text="LLM Copilot: Implement Interface"
+                description="Generate implementations for interface methods"/>
+
+        <!-- Selection context menu (Ctrl+Space on selection) -->
+        <action id="LLMCopilot.ShowSelectionActions"
+                class="com.llmcopilot.actions.ShowSelectionActionsAction"
+                text="LLM Copilot: Selection Actions"
+                description="Show AI actions for selected code">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl SPACE"/>
+        </action>
+
+        <!-- Commit message -->
+        <action id="LLMCopilot.GenerateCommitMessage"
+                class="com.llmcopilot.actions.GenerateCommitMessageAction"
+                text="LLM Copilot: Generate Commit Message"
+                description="Generate a commit message from the current diff">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift M"/>
+        </action>
+
+        <!-- Toggle enabled -->
+        <action id="LLMCopilot.ToggleEnabled"
+                class="com.llmcopilot.actions.ToggleEnabledAction"
+                text="LLM Copilot: Toggle Enable/Disable"
+                description="Toggle LLM Copilot on or off"/>
+
+        <!-- Test connection -->
+        <action id="LLMCopilot.TestConnection"
+                class="com.llmcopilot.actions.TestConnectionAction"
+                text="LLM Copilot: Test Connection"
+                description="Test connection to the configured LLM provider"/>
+
+        <!-- Group in Editor popup -->
+        <group id="LLMCopilot.EditorPopupMenu" text="LLM Copilot" popup="true">
+            <reference ref="LLMCopilot.ShowSelectionActions"/>
+            <reference ref="LLMCopilot.ExplainCode"/>
+            <reference ref="LLMCopilot.FixCode"/>
+            <reference ref="LLMCopilot.RefactorCode"/>
+            <reference ref="LLMCopilot.GenerateDocComment"/>
+            <reference ref="LLMCopilot.GenerateConstructor"/>
+            <reference ref="LLMCopilot.GenerateGettersSetters"/>
+            <reference ref="LLMCopilot.ImplementInterface"/>
+            <reference ref="LLMCopilot.GenerateTests"/>
+            <separator/>
+            <reference ref="LLMCopilot.InlineChat"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </group>
+
+    </actions>
+</idea-plugin>
