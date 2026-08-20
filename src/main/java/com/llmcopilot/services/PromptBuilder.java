@@ -114,7 +114,8 @@ public class PromptBuilder {
         }
 
         String wsSection = (workspaceCtx != null && !workspaceCtx.isBlank())
-            ? "\n// ── Related declarations from workspace ──\n" + workspaceCtx + "\n"
+            ? "\n// ── Related declarations resolved by the IDE ──\n" +
+              "// These signatures are real. Call them exactly as declared.\n" + workspaceCtx + "\n"
             : "";
 
         return "You are an expert " + lang + " code completion engine.\n" +

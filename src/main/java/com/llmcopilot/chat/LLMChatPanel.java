@@ -14,7 +14,6 @@ import java.awt.event.*;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.*;
-import java.util.regex.*;
 
 /**
  * Full AI Chat panel — Junie AI Assistant level.
@@ -354,60 +353,46 @@ public class LLMChatPanel extends JPanel {
     }
 
     /**
-     * Render an assistant message. If capturedCtx is non-null, extract code blocks
-     * and render each one as a CodeProposalPanel (with Accept/Discard buttons).
+     * Renders an assistant reply as one bubble per section, per
+     * {@link AssistantMessageParser}. With an editor context in hand each code block
+     * becomes a CodeProposalPanel carrying Accept/Discard; without one it is shown
+     * read-only, since there is no target to apply it to.
      */
     private void appendAssistantMessage(String text, EditorContextProvider.EditorContext ctx) {
-        // Split text into alternating prose and code-block sections
-        Pattern fence = Pattern.compile("(?s)```(\\w*)\n(.*?)```");
-        Matcher m     = fence.matcher(text);
+        List<AssistantMessageParser.Segment> segments = AssistantMessageParser.parse(text);
 
-        int lastEnd = 0;
-        boolean hadCode = false;
+        for (int i = 0; i < segments.size(); i++) {
+            AssistantMessageParser.Segment seg = segments.get(i);
 
-        while (m.find()) {
-            // Prose before this code block
-            String prose = text.substring(lastEnd, m.start()).trim();
-            if (!prose.isEmpty()) {
-                addMessage(makeBubble(prose, lastEnd == 0 ? "ASSISTANT" : "", COL_ASST_BG, COL_ASST_FG, FlowLayout.LEFT));
+            if (!seg.isCode()) {
+                // Only a reply that opens with prose carries the ASSISTANT header.
+                addMessage(makeBubble(seg.text(), i == 0 ? "ASSISTANT" : "",
+                    COL_ASST_BG, COL_ASST_FG, FlowLayout.LEFT));
+                continue;
             }
-            // Code block
-            String blockLang = m.group(1).isBlank() ? (ctx != null ? ctx.language : "text") : m.group(1);
-            String code      = m.group(2).trim();
-            if (!code.isEmpty()) {
-                hadCode = true;
-                if (ctx != null) {
-                    // Show as interactive proposal with Accept/Discard
-                    final String finalCode = code;
-                    final EditorContextProvider.EditorContext capturedCtx = ctx;
-                    CodeProposalPanel proposal = new CodeProposalPanel(
-                        project, code, blockLang, ctx,
-                        accepted -> {
-                            EditorContextProvider.applyToEditor(project, accepted, capturedCtx);
-                            appendSystemMessage("✓ Code applied to " + capturedCtx.fileName);
-                        },
-                        () -> appendSystemMessage("Discarded.")
-                    );
-                    proposal.setAlignmentX(Component.LEFT_ALIGNMENT);
-                    proposal.setMaximumSize(new Dimension(Integer.MAX_VALUE, proposal.getPreferredSize().height));
-                    addMessage(proposal);
-                } else {
-                    // No context — plain code display
-                    addMessage(makeCodeBlock(code, blockLang));
-                }
+
+            String blockLang = seg.language().isBlank()
+                ? (ctx != null ? ctx.language : "text")
+                : seg.language();
+
+            if (ctx == null) {
+                // No editor context — plain code display, nothing to apply it to.
+                addMessage(makeCodeBlock(seg.text(), blockLang));
+                continue;
             }
-            lastEnd = m.end();
-        }
 
-        // Remaining prose after last code block
-        String tail = text.substring(lastEnd).trim();
-        if (!tail.isEmpty()) {
-            addMessage(makeBubble(tail, hadCode ? "" : "ASSISTANT", COL_ASST_BG, COL_ASST_FG, FlowLayout.LEFT));
-        }
-
-        // If no code blocks at all, just show full text as prose
-        if (lastEnd == 0) {
-            addMessage(makeBubble(text, "ASSISTANT", COL_ASST_BG, COL_ASST_FG, FlowLayout.LEFT));
+            final EditorContextProvider.EditorContext capturedCtx = ctx;
+            CodeProposalPanel proposal = new CodeProposalPanel(
+                project, seg.text(), blockLang, ctx,
+                accepted -> {
+                    EditorContextProvider.applyToEditor(project, accepted, capturedCtx);
+                    appendSystemMessage("✓ Code applied to " + capturedCtx.fileName);
+                },
+                () -> appendSystemMessage("Discarded.")
+            );
+            proposal.setAlignmentX(Component.LEFT_ALIGNMENT);
+            proposal.setMaximumSize(new Dimension(Integer.MAX_VALUE, proposal.getPreferredSize().height));
+            addMessage(proposal);
         }
     }
 

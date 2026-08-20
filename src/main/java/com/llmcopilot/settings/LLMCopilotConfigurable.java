@@ -13,7 +13,7 @@ public class LLMCopilotConfigurable implements Configurable {
 
     private JBTextField  fldModel, fldBaseUrl, fldClaudeBaseUrl, fldClaudePath, fldTestFW, fldEnabledLangs;
     private JBTextField  fldApiKey;   // plain text field — JBPasswordField has no int constructor
-    private JBCheckBox   chkEnabled, chkAutoTrigger, chkStatusBar;
+    private JBCheckBox   chkEnabled, chkAutoTrigger, chkStatusBar, chkPsiContext;
     private JSpinner     spnMaxTokens, spnTemperature, spnDebounce;
     private ComboBox<String> cmbProvider;
 
@@ -36,6 +36,11 @@ public class LLMCopilotConfigurable implements Configurable {
         chkEnabled       = new JBCheckBox("Enable LLM Copilot");
         chkAutoTrigger   = new JBCheckBox("Auto-trigger completions");
         chkStatusBar     = new JBCheckBox("Show status bar widget");
+        chkPsiContext    = new JBCheckBox("Use IDE code analysis for completion context");
+        chkPsiContext.setToolTipText(
+            "Resolve the enclosing signature and referenced declarations through the language's "
+            + "parser, so completions match real types. Results are cached per region; turn off "
+            + "for the lowest possible latency.");
         spnMaxTokens     = new JSpinner(new SpinnerNumberModel(256, 10, 4096, 10));
         spnTemperature   = new JSpinner(new SpinnerNumberModel(0.2, 0.0, 2.0, 0.05));
         spnDebounce      = new JSpinner(new SpinnerNumberModel(600, 100, 3000, 100));
@@ -59,6 +64,7 @@ public class LLMCopilotConfigurable implements Configurable {
             .addLabeledComponent("Debounce (ms):",      spnDebounce)
             .addSeparator()
             .addComponent(chkAutoTrigger)
+            .addComponent(chkPsiContext)
             .addComponent(chkStatusBar)
             .addSeparator()
             .addLabeledComponent("Test framework:",     fldTestFW)
@@ -83,6 +89,7 @@ public class LLMCopilotConfigurable implements Configurable {
             || st.temperature      != (double) spnTemperature.getValue()
             || st.debounceMs       != (int)    spnDebounce.getValue()
             || st.autoTrigger      != chkAutoTrigger.isSelected()
+            || st.psiContext       != chkPsiContext.isSelected()
             || st.showStatusBar    != chkStatusBar.isSelected()
             || !st.testFramework.equals(fldTestFW.getText())
             || !st.enabledLanguages.equals(fldEnabledLangs.getText());
@@ -101,6 +108,7 @@ public class LLMCopilotConfigurable implements Configurable {
         st.temperature      = (double) spnTemperature.getValue();
         st.debounceMs       = (int)    spnDebounce.getValue();
         st.autoTrigger      = chkAutoTrigger.isSelected();
+        st.psiContext       = chkPsiContext.isSelected();
         st.showStatusBar    = chkStatusBar.isSelected();
         st.testFramework    = fldTestFW.getText().trim();
         st.enabledLanguages = fldEnabledLangs.getText().trim();
@@ -119,6 +127,7 @@ public class LLMCopilotConfigurable implements Configurable {
         spnTemperature.setValue(st.temperature);
         spnDebounce.setValue(st.debounceMs);
         chkAutoTrigger.setSelected(st.autoTrigger);
+        chkPsiContext.setSelected(st.psiContext);
         chkStatusBar.setSelected(st.showStatusBar);
         fldTestFW.setText(st.testFramework);
         fldEnabledLangs.setText(st.enabledLanguages);
