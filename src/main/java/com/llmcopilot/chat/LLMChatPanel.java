@@ -84,7 +84,7 @@ public class LLMChatPanel extends JPanel {
         contextBar.add(contextBtn,   BorderLayout.EAST);
 
         // ── Messages panel (scrollable vertical list) ─────────────────────────
-        messagesPanel = new JPanel();
+        messagesPanel = new MessagesPanel();
         messagesPanel.setLayout(new BoxLayout(messagesPanel, BoxLayout.Y_AXIS));
         messagesPanel.setBackground(Color.WHITE);
         messagesPanel.setBorder(JBUI.Borders.empty(8, 8, 8, 8));
@@ -92,6 +92,15 @@ public class LLMChatPanel extends JPanel {
         scrollPane = new JScrollPane(messagesPanel);
         scrollPane.setBorder(BorderFactory.createEmptyBorder());
         scrollPane.getVerticalScrollBar().setUnitIncrement(16);
+        // Bubbles re-wrap to fit, so there is never anything to scroll to sideways.
+        scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        // Widths are derived from the viewport, so every resize needs a fresh layout pass.
+        scrollPane.getViewport().addComponentListener(new ComponentAdapter() {
+            @Override public void componentResized(ComponentEvent e) {
+                messagesPanel.revalidate();
+                messagesPanel.repaint();
+            }
+        });
 
         appendSystemMessage("LLM Copilot ready. Type a message or use:\n" +
             "/fix — fix bugs\n/explain — explain code\n/refactor <instruction> — refactor\n" +
@@ -399,16 +408,13 @@ public class LLMChatPanel extends JPanel {
     // ── Bubble factory ────────────────────────────────────────────────────────
 
     private JPanel makeBubble(String text, String label, Color bg, Color fg, int align) {
-        JPanel outer = new JPanel(new FlowLayout(align, 0, 2));
-        outer.setOpaque(false);
-        outer.setAlignmentX(Component.LEFT_ALIGNMENT);
+        JTextPane body = new JTextPane();
 
-        JPanel inner = new JPanel(new BorderLayout(0, 2));
+        MessageBubble inner = new MessageBubble(body);
         inner.setBackground(bg);
         inner.setBorder(BorderFactory.createCompoundBorder(
             BorderFactory.createLineBorder(bg.darker(), 1, true),
             JBUI.Borders.empty(6, 10)));
-        inner.setMaximumSize(new Dimension(700, Integer.MAX_VALUE));
 
         if (!label.isEmpty()) {
             JLabel lbl = new JLabel(label);
@@ -417,7 +423,6 @@ public class LLMChatPanel extends JPanel {
             inner.add(lbl, BorderLayout.NORTH);
         }
 
-        JTextPane body = new JTextPane();
         body.setEditable(false);
         body.setOpaque(false);
         body.setForeground(fg);
@@ -437,9 +442,7 @@ public class LLMChatPanel extends JPanel {
 
         renderInlineText(doc, text, normal, mono);
         inner.add(body, BorderLayout.CENTER);
-
-        outer.add(inner);
-        return outer;
+        return new BubbleRow(inner, align == FlowLayout.RIGHT);
     }
 
     private JPanel makeCodeBlock(String code, String lang) {
@@ -494,9 +497,12 @@ public class LLMChatPanel extends JPanel {
     }
 
     private void addMessage(Component c) {
-        if (c instanceof JPanel p) {
+        // A bubble owns its own width and alignment; anything else (code blocks, proposals)
+        // spans the full width and is pinned to its preferred height so BoxLayout cannot
+        // stretch it into the leftover vertical space.
+        if (c instanceof JPanel p && !(c instanceof BubbleRow)) {
             p.setAlignmentX(Component.LEFT_ALIGNMENT);
-            p.setMaximumSize(new Dimension(Integer.MAX_VALUE, p.getMaximumSize().height));
+            p.setMaximumSize(new Dimension(Integer.MAX_VALUE, p.getPreferredSize().height));
         }
         messagesPanel.add(c);
         messagesPanel.add(Box.createVerticalStrut(6));
@@ -514,6 +520,24 @@ public class LLMChatPanel extends JPanel {
         messagesPanel.revalidate();
         messagesPanel.repaint();
         appendSystemMessage("Chat cleared. Ready.");
+    }
+
+    /**
+     * The message list. Tracking the viewport width is what makes bubbles wrap at all:
+     * without it the box is as wide as its widest child asks to be, and the scroll pane
+     * offers a horizontal scrollbar instead of re-flowing the text.
+     */
+    private static final class MessagesPanel extends JPanel implements Scrollable {
+        @Override public Dimension getPreferredScrollableViewportSize() { return getPreferredSize(); }
+        @Override public boolean getScrollableTracksViewportWidth()     { return true; }
+        @Override public boolean getScrollableTracksViewportHeight()    { return false; }
+
+        @Override public int getScrollableUnitIncrement(Rectangle visible, int orientation, int direction) {
+            return 16;
+        }
+        @Override public int getScrollableBlockIncrement(Rectangle visible, int orientation, int direction) {
+            return orientation == SwingConstants.VERTICAL ? visible.height : visible.width;
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
