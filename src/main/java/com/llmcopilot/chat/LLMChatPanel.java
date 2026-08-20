@@ -399,15 +399,11 @@ public class LLMChatPanel extends JPanel {
             lastEnd = m.end();
         }
 
-        // Remaining prose after last code block
+        // Remaining prose after the last code block. When the response contained no
+        // code blocks at all, lastEnd is still 0 and this renders the whole message.
         String tail = text.substring(lastEnd).trim();
         if (!tail.isEmpty()) {
             addMessage(makeBubble(tail, hadCode ? "" : "ASSISTANT", COL_ASST_BG, COL_ASST_FG, FlowLayout.LEFT));
-        }
-
-        // If no code blocks at all, just show full text as prose
-        if (lastEnd == 0) {
-            addMessage(makeBubble(text, "ASSISTANT", COL_ASST_BG, COL_ASST_FG, FlowLayout.LEFT));
         }
     }
 
