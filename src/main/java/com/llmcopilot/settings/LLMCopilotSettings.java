@@ -22,6 +22,8 @@ public class LLMCopilotSettings implements PersistentStateComponent<LLMCopilotSe
         public int     contextLines     = 50;
         public int     debounceMs       = 600;
         public boolean autoTrigger      = true;
+        /** Resolve types and signatures through the language's parser before completing. */
+        public boolean psiContext       = true;
         public boolean showStatusBar    = true;
         public String  testFramework    = "";
         public String  enabledLanguages = "";
@@ -50,5 +52,7 @@ public class LLMCopilotSettings implements PersistentStateComponent<LLMCopilotSe
     public int     getContextLines()      { return myState.contextLines; }
     public int     getDebounceMs()        { return myState.debounceMs; }
     public boolean isAutoTrigger()        { return myState.autoTrigger; }
+    public boolean isPsiContext()         { return myState.psiContext; }
+    public void    setPsiContext(boolean v) { myState.psiContext = v; }
     public String  getTestFramework()     { return myState.testFramework; }
 }

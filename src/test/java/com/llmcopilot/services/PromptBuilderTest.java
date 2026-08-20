@@ -213,7 +213,7 @@ class PromptBuilderTest {
         void theWorkspaceSectionAppearsOnlyWhenContextIsSupplied() {
             assertFalse(build("continue", 0, "   ", null).contains("Related declarations"));
             assertTrue(build("continue", 0, "class Helper {}", null)
-                .contains("Related declarations from workspace"));
+                .contains("Related declarations resolved by the IDE"));
         }
 
         @Test

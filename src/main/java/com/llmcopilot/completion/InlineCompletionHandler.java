@@ -32,6 +32,9 @@ public class InlineCompletionHandler implements DocumentListener {
 
     private static final int CONTEXT_WINDOW = 5; // lines up and down
 
+    /** Ceiling on the resolved-declaration block; keeps prompts from bloating while typing. */
+    private static final int RELATED_BUDGET_CHARS = 2000;
+
     private final Editor         editor;
     private final GhostTextManager ghost;
 
@@ -146,19 +149,28 @@ public class InlineCompletionHandler implements DocumentListener {
         if (!isKeyword && prefix.trim().length() > 15 && charsAfter == 0) return;
 
         // ── Determine intent and structural guide
+        //
+        // The two analyses answer different questions. StructureAnalyzer reads the shape of
+        // the text to decide WHAT belongs here (a constructor, the next method, an enum case).
+        // PSI reads the language's own parse tree to establish WHERE the caret is, with the
+        // real enclosing signature. PSI leads when it resolved something and the text analysis
+        // carries the suggestion; when PSI is unavailable the text analysis stands alone.
         final String intent;
-        final String structGuide;
         boolean isBlankLine = prefix.trim().isEmpty();
 
-        if (isKeyword) {
-            intent = "completing-started"; structGuide = null;
-        } else if (isBlankLine) {
-            StructureAnalyzer.StructureContext ctx = StructureAnalyzer.analyse(editor, offset);
-            intent = ctx.kind == StructureAnalyzer.StructureKind.TOP_LEVEL ? "new-block" : "new-statement";
-            structGuide = buildStructGuide(ctx);
+        String textGuide = null;
+        if (isBlankLine && !isKeyword) {
+            StructureAnalyzer.StructureContext sc = StructureAnalyzer.analyse(editor, offset);
+            intent    = sc.kind == StructureAnalyzer.StructureKind.TOP_LEVEL ? "new-block" : "new-statement";
+            textGuide = buildStructGuide(sc);
         } else {
-            intent = "completing-started"; structGuide = null;
+            intent = "completing-started";
         }
+
+        CodeContext psiCtx      = PsiCodeContextCollector.collect(editor, offset);
+        String      psiGuide    = psiCtx.structuralGuide(textGuide);
+        final String structGuide = psiGuide != null ? psiGuide : textGuide;
+        final String relatedCtx  = psiCtx.relatedBlock(RELATED_BUDGET_CHARS);
 
         // Record trigger line for context-window tracking
         lastTriggerLine = line;
@@ -177,12 +189,14 @@ public class InlineCompletionHandler implements DocumentListener {
         String kw     = keyword;
         int    ins    = offset;
         String sg     = structGuide;
+        String related= relatedCtx;
         String intent2= intent;
 
         // ── Cache check (key includes line number to prevent cross-line hits)
-        String cacheKey = ("L" + line + ":" + fp).length() > 400
-            ? "L" + line + ":" + fp.substring(fp.length() - 380)
-            : "L" + line + ":" + fp;
+        String ctxTag   = "L" + line + "#" + Objects.hash(structGuide, relatedCtx) + ":";
+        String cacheKey = (ctxTag + fp).length() > 400
+            ? ctxTag + fp.substring(fp.length() - 380)
+            : ctxTag + fp;
         String cached = CACHE.get(cacheKey);
         if (cached != null && generation.get() == gen) {
             ghost.showSuggestion(cached, ins);
@@ -192,7 +206,7 @@ public class InlineCompletionHandler implements DocumentListener {
         LLM_POOL.submit(() -> {
             if (generation.get() != gen) return;
             try {
-                String prompt = PromptBuilder.completionPrompt(fp, fs, lang, fname, intent2, 0, sg, null, kw);
+                String prompt = PromptBuilder.completionPrompt(fp, fs, lang, fname, intent2, 0, sg, related, kw);
                 String raw    = LLMClient.complete(prompt);
                 if (raw == null || raw.isBlank()) return;
                 if (generation.get() != gen) return;
@@ -232,7 +246,10 @@ public class InlineCompletionHandler implements DocumentListener {
         return vf != null ? vf.getName() : "untitled";
     }
 
-    public static void clearCache() { CACHE.clear(); }
+    public static void clearCache() {
+        CACHE.clear();
+        PsiCodeContextCollector.clearCache();
+    }
 
     public void dispose() {
         editor.getDocument().removeDocumentListener(this);
