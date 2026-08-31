@@ -313,4 +313,91 @@ public final class IntentInference {
         Matcher m = Pattern.compile(regex).matcher(text);
         return m.find() && m.group(g) != null ? m.group(g) : "";
     }
+
+    // ── The signature ─────────────────────────────────────────────────────────
+
+    /** Joins a header that wrapped across lines, so its parameter list is complete. */
+    private static String headerText(Document doc, int line) {
+        StringBuilder sb = new StringBuilder(stripLiterals(lineText(doc, line)));
+        for (int i = line + 1; i < Math.min(line + 4, doc.getLineCount()); i++) {
+            if (balanced(sb.toString())) break;
+            sb.append(' ').append(stripLiterals(lineText(doc, i)).trim());
+        }
+        return sb.toString().trim();
+    }
+
+    private static boolean balanced(String text) {
+        int depth = 0;
+        boolean sawOpen = false;
+        for (char c : text.toCharArray()) {
+            if (c == '(') { depth++; sawOpen = true; }
+            else if (c == ')') depth--;
+        }
+        return sawOpen && depth <= 0;
+    }
+
+    /** The text between the parameter list's own parentheses. */
+    static String paramSource(String header) {
+        int open = -1, depth = 0;
+        for (int i = 0; i < header.length(); i++) {
+            char c = header.charAt(i);
+            if (c == '(') {
+                if (depth == 0 && open < 0) open = i;
+                depth++;
+            } else if (c == ')') {
+                depth--;
+                if (depth == 0 && open >= 0) return header.substring(open + 1, i);
+            }
+        }
+        return "";
+    }
+
+    /** Splits on commas that are not nested inside brackets or generics. */
+    static List<String> splitTopLevel(String source) {
+        List<String> out = new ArrayList<>();
+        int depth = 0, start = 0;
+        for (int i = 0; i < source.length(); i++) {
+            char c = source.charAt(i);
+            if (c == '(' || c == '[' || c == '<' || c == '{') depth++;
+            else if (c == ')' || c == ']' || c == '>' || c == '}') depth--;
+            else if (c == ',' && depth == 0) {
+                String chunk = source.substring(start, i).trim();
+                if (!chunk.isEmpty()) out.add(chunk);
+                start = i + 1;
+            }
+        }
+        String last = source.substring(start).trim();
+        if (!last.isEmpty()) out.add(last);
+        return out;
+    }
+
+    /**
+     * The parameter's name, whichever side of it the type sits on: {@code name: String},
+     * {@code final String name} and {@code String... names} all yield {@code name}.
+     */
+    static String paramName(String chunk) {
+        String text = chunk;
+        int eq = text.indexOf('=');
+        if (eq >= 0) text = text.substring(0, eq);
+        int colon = text.indexOf(':');
+        if (colon >= 0) text = text.substring(0, colon);
+        text = text.replaceAll("[*&]", " ").replaceAll("\\.\\.\\.", " ").trim();
+        if (text.isEmpty()) return "";
+        String[] words = text.split("[\\s\\[\\]]+");
+        for (int i = words.length - 1; i >= 0; i--) {
+            if (words[i].matches("[A-Za-z_$][\\w$]*")) return words[i];
+        }
+        return "";
+    }
+
+    /** The declared return type, read from either side of the name. */
+    static String returnType(String header, String name) {
+        String after = group(header, "\\)\\s*(?:->|:)\\s*([^{;]+?)\\s*[{;]?\\s*$", 1);
+        if (!after.isBlank()) return after.trim();
+
+        String before = group(header, "([\\w<>\\[\\],.?]+)\\s+" + Pattern.quote(name) + "\\s*\\(", 1);
+        if (before.isBlank()) return "";
+        if (before.matches("public|private|protected|static|final|abstract|synchronized|native|default|new")) return "";
+        return before;
+    }
 }
