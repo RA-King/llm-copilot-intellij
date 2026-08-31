@@ -400,4 +400,91 @@ public final class IntentInference {
         if (before.matches("public|private|protected|static|final|abstract|synchronized|native|default|new")) return "";
         return before;
     }
+
+    // ── Progress through the body ─────────────────────────────────────────────
+
+    private static final Pattern GUARD =
+        Pattern.compile("^(?:if|unless)\\b.*\\b(?:return|throw|raise|panic|continue)\\b");
+
+    private static int countGuards(Document doc, int fromLine, int toLine) {
+        int guards = 0;
+        for (int i = fromLine; i <= toLine && i < doc.getLineCount(); i++) {
+            String text = stripLiterals(lineText(doc, i)).trim();
+            if (text.isEmpty()) continue;
+            if (GUARD.matcher(text).find()) { guards++; continue; }
+            if (text.matches("^(?:if|unless)\\b.*")
+                && stripLiterals(lineText(doc, i + 1)).trim().matches("^(?:return|throw|raise)\\b.*")) {
+                guards++;
+                continue;
+            }
+            if (!text.startsWith("}") && !text.startsWith(")") && !text.startsWith("]")) break;
+        }
+        return guards;
+    }
+
+    private static final Pattern LOCAL_DECL = Pattern.compile(
+        "^(?:const|let|var|final|val|auto)\\s+([A-Za-z_$][\\w$]*)\\s*(?::\\s*([^=]+?))?\\s*="
+      + "|^([A-Z][\\w<>\\[\\],.]*)\\s+([a-z_$][\\w$]*)\\s*="
+      + "|^([a-z_$][\\w$]*)\\s*:?=\\s*");
+
+    /** Locals declared between the header and the caret, in declaration order. */
+    static List<Binding> localsIn(Document doc, int fromLine, int toLine) {
+        List<Binding> out = new ArrayList<>();
+        for (int i = fromLine; i <= toLine && i < doc.getLineCount(); i++) {
+            String text = stripLiterals(lineText(doc, i)).trim();
+            Matcher m = LOCAL_DECL.matcher(text);
+            if (!m.find()) continue;
+            if (m.group(1) != null)      out.add(new Binding(m.group(1), trimType(m.group(2)), i));
+            else if (m.group(4) != null) out.add(new Binding(m.group(4), trimType(m.group(3)), i));
+            else if (m.group(5) != null) out.add(new Binding(m.group(5), "", i));
+        }
+        return out;
+    }
+
+    private static String trimType(String type) {
+        return type == null ? "" : type.trim();
+    }
+
+    private static final Pattern EMPTY_INIT = Pattern.compile(
+        "^(?:\\[\\]|\\{\\}|0|0\\.0|''|\"\"|``|new\\s+\\w+(?:<[^>]*>)?\\(\\s*\\)"
+      + "|make\\(|list\\(\\)|dict\\(\\)|set\\(\\)|\\w+::new\\(\\))");
+
+    /** The right-hand side of a declaration, for spotting something being filled in. */
+    private static String initialiserOf(Document doc, Binding binding) {
+        String line = stripLiterals(lineText(doc, binding.line()));
+        String rhs = group(line, "\\b" + Pattern.quote(binding.name()) + "\\b[^=]*=\\s*(.+?);?\\s*$", 1);
+        return rhs.trim();
+    }
+
+    /**
+     * A local initialised to an empty collection, zero or an empty string is being filled
+     * in — and when the caret is inside a loop that follows it, the statement being typed
+     * is almost certainly the one that writes to it.
+     */
+    private static Binding findAccumulator(Document doc, List<Binding> locals, OpenConstruct open) {
+        List<Binding> candidates = new ArrayList<>();
+        for (Binding b : locals) {
+            if (EMPTY_INIT.matcher(initialiserOf(doc, b)).find()) candidates.add(b);
+        }
+        if (candidates.isEmpty()) return null;
+        if (open != null && open.kind() == ConstructKind.LOOP) {
+            for (int i = candidates.size() - 1; i >= 0; i--) {
+                if (candidates.get(i).line() < open.line()) return candidates.get(i);
+            }
+        }
+        return candidates.get(candidates.size() - 1);
+    }
+
+    private static final List<String> VOID_TYPES =
+        List.of("void", "none", "unit", "()", "undefined", "never", "");
+
+    /**
+     * Whether the declared result is still owed. Returns already written that are indented
+     * deeper than the body are guards and branch exits, not the answer.
+     */
+    private static boolean owesReturn(String returnType, String body) {
+        String declared = returnType.trim().replaceAll("^(?:Promise|Future|Task)<|>$", "").trim();
+        if (VOID_TYPES.contains(declared.toLowerCase())) return false;
+        return !Pattern.compile("\\n {0,4}return\\s+\\S").matcher(body).find();
+    }
 }
