@@ -204,4 +204,113 @@ public final class IntentInference {
         while (m.find()) n++;
         return n;
     }
+
+    // ── The enclosing declaration and the block above the caret ───────────────
+
+    /**
+     * Lines that structurally contain the caret, innermost first. A line is an ancestor
+     * only when it is less indented than every line already accepted, which keeps closing
+     * braces and finished sibling blocks out and works for brace and indentation
+     * languages alike.
+     */
+    static List<Integer> ancestorLines(Document doc, int caretLine, int caretIndent) {
+        List<Integer> out = new ArrayList<>();
+        int minIndent = caretIndent;
+        for (int i = caretLine - 1; i >= 0 && i >= caretLine - LOOKBACK; i--) {
+            String raw = lineText(doc, i);
+            if (raw.isBlank()) continue;
+            int indent = indentWidth(raw);
+            if (indent >= minIndent) continue;
+            out.add(i);
+            minIndent = indent;
+            if (minIndent == 0) break;
+        }
+        return out;
+    }
+
+    private static final Pattern FUNCTION_HEADER = Pattern.compile(
+        "(?:^|\\s)(?:function|fn|def|func|fun|sub)\\s+([A-Za-z_$][\\w$]*)"
+      + "|(?:^|\\s)([A-Za-z_$][\\w$]*)\\s*(?:<[^>]*>)?\\s*\\([^;]*\\)\\s*(?:->|:)?[^;{]*\\{"
+      + "|(?:^|\\s)([A-Za-z_$][\\w$]*)\\s*=\\s*(?:async\\s*)?\\(");
+
+    private static final Pattern CONTROL_KEYWORD = Pattern.compile(
+        "^(?:if|unless|for|foreach|while|do|loop|switch|match|when|try|begin|catch|except"
+      + "|rescue|else|elif|finally|ensure|with|using|return|yield)\\b");
+
+    /** The declaration name on a header line, or {@code null} when it is not one. */
+    static String functionNameOn(String rawLine) {
+        // A closing brace can share the line with the keyword that follows it
+        // (`} catch (IOException err) {`), so drop it before classifying.
+        String line = stripLiterals(rawLine).trim().replaceFirst("^\\}\\s*", "");
+        if (CONTROL_KEYWORD.matcher(line).find()) return null;
+        Matcher m = FUNCTION_HEADER.matcher(line);
+        if (!m.find()) return null;
+        for (int g = 1; g <= m.groupCount(); g++) {
+            if (m.group(g) != null) return m.group(g);
+        }
+        return null;
+    }
+
+    private static final List<Map.Entry<Pattern, ConstructKind>> BLOCK_OPENERS = List.of(
+        Map.entry(Pattern.compile("^(?:for|foreach)\\b", Pattern.CASE_INSENSITIVE), ConstructKind.LOOP),
+        Map.entry(Pattern.compile("^while\\b|^do\\b|^loop\\b"),                     ConstructKind.LOOP),
+        Map.entry(Pattern.compile("^(?:\\}\\s*)?else\\s+if\\b|^elif\\b"),           ConstructKind.BRANCH),
+        Map.entry(Pattern.compile("^(?:\\}\\s*)?else\\b"),                          ConstructKind.BRANCH),
+        Map.entry(Pattern.compile("^if\\b|^unless\\b"),                             ConstructKind.BRANCH),
+        Map.entry(Pattern.compile("^try\\b|^begin\\b"),                             ConstructKind.TRY),
+        Map.entry(Pattern.compile("^(?:\\}\\s*)?(?:catch|except|rescue)\\b"),       ConstructKind.CATCH),
+        Map.entry(Pattern.compile("^(?:\\}\\s*)?finally\\b|^ensure\\b"),            ConstructKind.FINALLY),
+        Map.entry(Pattern.compile("^switch\\b|^match\\b|^when\\b"),                 ConstructKind.SWITCH),
+        Map.entry(Pattern.compile("^with\\b|^using\\b"),                            ConstructKind.WITH));
+
+    private static boolean opensBlock(String text) {
+        return text.endsWith("{") || text.endsWith("(") || text.endsWith("[")
+            || text.endsWith(":") || text.matches(".*\\b(?:do|then)\\s*(?:\\|[^|]*\\|)?$");
+    }
+
+    /** Classifies an ancestor line as the block the caret is writing into. */
+    static OpenConstruct constructOn(String rawLine, int line) {
+        String text = stripLiterals(rawLine).trim();
+        if (!opensBlock(text)) return null;
+        for (Map.Entry<Pattern, ConstructKind> e : BLOCK_OPENERS) {
+            if (!e.getKey().matcher(text).find()) continue;
+            ConstructKind kind = e.getValue();
+            return new OpenConstruct(kind, text, line, loopBinding(text, kind),
+                                     loopIterable(text), blockCondition(text, kind));
+        }
+        return new OpenConstruct(ConstructKind.CALLBACK, text, line, "", "", "");
+    }
+
+    private static String loopBinding(String header, ConstructKind kind) {
+        if (kind == ConstructKind.CATCH) {
+            return group(header, "(?:catch|except|rescue)\\s*\\(?\\s*(?:[\\w.]+\\s+(?:as\\s+)?)?([A-Za-z_$][\\w$]*)", 1);
+        }
+        if (kind != ConstructKind.LOOP) return "";
+        String name = group(header, "for\\s*\\(?\\s*(?:const|let|var|final|auto)?\\s*([A-Za-z_$][\\w$]*)\\s+(?:of|in)\\b", 1);
+        if (!name.isEmpty()) return name;
+        name = group(header, "for\\s+([A-Za-z_$][\\w$]*)\\s+in\\b", 1);
+        if (!name.isEmpty()) return name;
+        name = group(header, "for\\s*\\(\\s*(?:[\\w<>\\[\\].]+\\s+)?([A-Za-z_$][\\w$]*)\\s*:", 1);
+        if (!name.isEmpty()) return name;
+        return group(header, "for\\s*\\(\\s*(?:const|let|var|int|size_t)?\\s*([A-Za-z_$][\\w$]*)\\s*=", 1);
+    }
+
+    private static String loopIterable(String header) {
+        String it = group(header, "\\b(?:of|in)\\s+([A-Za-z_$][\\w$.]*)", 1);
+        if (!it.isEmpty()) return it;
+        return group(header, ":\\s*([A-Za-z_$][\\w$.]*)\\s*\\)", 1);
+    }
+
+    private static String blockCondition(String header, ConstructKind kind) {
+        if (kind != ConstructKind.BRANCH && kind != ConstructKind.LOOP && kind != ConstructKind.SWITCH) return "";
+        String paren = group(header, "\\(([^)]*)\\)\\s*[{:]?$", 1);
+        if (!paren.isEmpty()) return paren.trim();
+        return header.replaceAll("^(?:\\}\\s*)?(?:else\\s+if|if|elif|unless|while|switch|match)\\s*", "")
+                     .replaceAll("[:{]$", "").trim();
+    }
+
+    private static String group(String text, String regex, int g) {
+        Matcher m = Pattern.compile(regex).matcher(text);
+        return m.find() && m.group(g) != null ? m.group(g) : "";
+    }
 }
