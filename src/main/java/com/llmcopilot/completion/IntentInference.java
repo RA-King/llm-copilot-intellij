@@ -652,4 +652,78 @@ public final class IntentInference {
     private static void add(List<String> steps, String step) {
         if (step != null && !step.isBlank() && steps.size() < 3 && !steps.contains(step)) steps.add(step);
     }
+
+    // ── Rendering ─────────────────────────────────────────────────────────────
+
+    private static String shapeGuide(Shape shape) {
+        return switch (shape) {
+            case EXPRESSION -> "Finish the current expression only — one line, no trailing statements.";
+            case STATEMENT  -> "Write the next statement, or the two or three that clearly belong with it. "
+                             + "Do not write the rest of the method.";
+            case BLOCK      -> "Write the body of the block that was just opened.";
+        };
+    }
+
+    /**
+     * Renders the reading as a prompt section, or {@code null} when only the shape guide
+     * would remain — a caret this has no opinion about should cost no prompt budget.
+     */
+    public static String render(Reading r) {
+        if (r == null || r.isEmpty()) return null;
+        List<String> lines = new ArrayList<>();
+
+        if (!r.goal().isBlank() && r.goalKind() != GoalKind.UNKNOWN) {
+            lines.add("The enclosing declaration is named for one job: " + r.goal() + ".");
+        }
+
+        OpenConstruct oc = r.openConstruct();
+        if (oc != null) {
+            String detail = "";
+            if (oc.kind() == ConstructKind.LOOP && !oc.binding().isEmpty() && !oc.iterable().isEmpty()) {
+                detail = " over `" + oc.iterable() + "`, item `" + oc.binding() + "`";
+            } else if (oc.kind() == ConstructKind.CATCH && !oc.binding().isEmpty()) {
+                detail = " binding `" + oc.binding() + "`";
+            } else if (!oc.condition().isEmpty()) {
+                detail = " on `" + oc.condition() + "`";
+            }
+            lines.add("The caret is inside a " + oc.kind().name().toLowerCase() + detail + ".");
+        }
+
+        if (r.accumulator() != null) {
+            lines.add("`" + r.accumulator().name() + "` was initialised empty and is being filled in.");
+        }
+
+        if (!r.unusedParams().isEmpty()) {
+            lines.add("Parameters nothing has read yet: " + String.join(", ", r.unusedParams()) + ".");
+        }
+
+        List<String> loose = new ArrayList<>();
+        for (Binding b : r.unusedLocals()) {
+            if (r.accumulator() != null && b.name().equals(r.accumulator().name())) continue;
+            loose.add(b.type().isEmpty() ? b.name() : b.name() + ": " + b.type());
+            if (loose.size() == 4) break;
+        }
+        if (!loose.isEmpty()) lines.add("Declared but not yet used: " + String.join(", ", loose) + ".");
+
+        if (r.guardCount() > 0) {
+            lines.add(r.guardCount() + " guard clause" + (r.guardCount() > 1 ? "s" : "")
+                    + " already written at the top of the body.");
+        }
+        if (r.returnPending()) {
+            lines.add("The declared result has not been produced yet on the main path.");
+        }
+
+        if (!r.nextSteps().isEmpty()) {
+            StringBuilder sb = new StringBuilder("Most likely next: ");
+            for (int i = 0; i < r.nextSteps().size(); i++) {
+                if (i > 0) sb.append("; ");
+                sb.append('(').append(i + 1).append(") ").append(r.nextSteps().get(i));
+            }
+            lines.add(sb.append('.').toString());
+        }
+
+        if (lines.isEmpty()) return null;
+        lines.add(shapeGuide(r.shape()));
+        return String.join("\n", lines);
+    }
 }
