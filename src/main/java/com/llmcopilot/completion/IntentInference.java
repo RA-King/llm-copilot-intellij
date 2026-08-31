@@ -487,4 +487,19 @@ public final class IntentInference {
         if (VOID_TYPES.contains(declared.toLowerCase())) return false;
         return !Pattern.compile("\\n {0,4}return\\s+\\S").matcher(body).find();
     }
+
+    // ── How much to write ─────────────────────────────────────────────────────
+
+    private static final Pattern EXPRESSION_TAIL = Pattern.compile(
+        "[=(,\\[+\\-*/%<>!&|?]$|\\b(?:return|await|new|yield|throw|typeof)$|\\.\\w*$");
+
+    static Shape decideShape(String linePrefix, OpenConstruct open, int caretLine) {
+        String trimmed = linePrefix.trim();
+        if (trimmed.isEmpty()) {
+            return open != null && open.line() == caretLine - 1 ? Shape.BLOCK : Shape.STATEMENT;
+        }
+        if (trimmed.endsWith("{") || trimmed.endsWith(":")) return Shape.BLOCK;
+        if (EXPRESSION_TAIL.matcher(trimmed).find()) return Shape.EXPRESSION;
+        return Shape.STATEMENT;
+    }
 }
