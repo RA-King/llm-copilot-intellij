@@ -1,9 +1,13 @@
 package com.llmcopilot.completion;
 
+import com.intellij.openapi.editor.Document;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Reads what the author is <em>trying to do</em> from the code already written, so the
@@ -145,5 +149,59 @@ public final class IntentInference {
             return new Named(kind, String.join(" ", words), rest.isBlank() ? String.join(" ", words) : rest);
         }
         return new Named(kind, (first + " " + rest).trim(), rest);
+    }
+
+    // ── Document helpers ──────────────────────────────────────────────────────
+
+    private static String lineText(Document doc, int line) {
+        if (line < 0 || line >= doc.getLineCount()) return "";
+        return doc.getCharsSequence()
+                  .subSequence(doc.getLineStartOffset(line), doc.getLineEndOffset(line))
+                  .toString();
+    }
+
+    static int indentWidth(String text) {
+        int width = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == ' ') width++;
+            else if (c == '\t') width += 4;
+            else break;
+        }
+        return width;
+    }
+
+    /** Blanks string and character literals so a brace inside one cannot be read as code. */
+    static String stripLiterals(String line) {
+        StringBuilder out = new StringBuilder(line.length());
+        char quote = 0;
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (quote != 0) {
+                out.append(c == quote ? c : ' ');
+                if (c == quote && (i == 0 || line.charAt(i - 1) != '\\')) quote = 0;
+                continue;
+            }
+            if (c == '"' || c == '\'' || c == '`') { quote = c; out.append(c); continue; }
+            out.append(c);
+        }
+        return out.toString();
+    }
+
+    /** Body text between {@code fromLine} and {@code toLine}, literals blanked. */
+    private static String bodyText(Document doc, int fromLine, int toLine) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = Math.max(0, fromLine); i <= Math.min(toLine, doc.getLineCount() - 1); i++) {
+            sb.append(stripLiterals(lineText(doc, i))).append('\n');
+        }
+        return sb.toString();
+    }
+
+    private static int referenceCount(String body, String name) {
+        if (name == null || name.isBlank()) return 0;
+        Matcher m = Pattern.compile("\\b" + Pattern.quote(name) + "\\b").matcher(body);
+        int n = 0;
+        while (m.find()) n++;
+        return n;
     }
 }
