@@ -48,21 +48,35 @@ public class LLMClient {
     // ── Main public API ───────────────────────────────────────────────────────
 
     public static String complete(String prompt) throws Exception {
-        return chat(List.of(new ChatMessage("user", prompt)));
+        return complete(prompt, LLMCopilotSettings.getInstance().getMaxTokens());
+    }
+
+    /**
+     * Completes with a reply ceiling tighter than the configured maximum. Finishing a
+     * half-written expression needs a handful of tokens, and a low ceiling is what stops
+     * the model running past the thought the author was in the middle of.
+     */
+    public static String complete(String prompt, int maxTokens) throws Exception {
+        return chat(List.of(new ChatMessage("user", prompt)), maxTokens);
     }
 
     public static String chat(List<ChatMessage> messages) throws Exception {
+        return chat(messages, LLMCopilotSettings.getInstance().getMaxTokens());
+    }
+
+    public static String chat(List<ChatMessage> messages, int maxTokens) throws Exception {
         LLMCopilotSettings s = LLMCopilotSettings.getInstance();
+        int cap = Math.max(1, Math.min(maxTokens, maxTokens));
         return switch (s.getProvider()) {
-            case "ollama"     -> ollamaChat(messages, s);
-            case "anthropic"  -> anthropicChat(messages, s);
-            case "mistral"    -> mistralChat(messages, s);
-            case "claudecode" -> claudeCodeChat(messages, s);
-            case "gemini"     -> geminiChat(messages, s);
-            case "deepseek"   -> deepseekChat(messages, s);
-            case "grok"       -> grokChat(messages, s);
-            case "azure"      -> azureChat(messages, s);
-            default           -> openaiChat(messages, s);   // openai / groq / openrouter / lmstudio / custom
+            case "ollama"     -> ollamaChat(messages, s, cap);
+            case "anthropic"  -> anthropicChat(messages, s, cap);
+            case "mistral"    -> mistralChat(messages, s, cap);
+            case "claudecode" -> claudeCodeChat(messages, s, cap);
+            case "gemini"     -> geminiChat(messages, s, cap);
+            case "deepseek"   -> deepseekChat(messages, s, cap);
+            case "grok"       -> grokChat(messages, s, cap);
+            case "azure"      -> azureChat(messages, s, cap);
+            default           -> openaiChat(messages, s, cap);   // openai / groq / openrouter / lmstudio / custom
         };
     }
 
@@ -113,13 +127,14 @@ public class LLMClient {
 
     // ── Provider implementations ──────────────────────────────────────────────
 
-    private static String ollamaChat(List<ChatMessage> messages, LLMCopilotSettings s) throws Exception {
+    private static String ollamaChat(List<ChatMessage> messages, LLMCopilotSettings s, int maxTokens) throws Exception {
         String url = s.getBaseUrl().replaceAll("/$","") + "/api/chat";
         JsonObject body = new JsonObject();
         body.addProperty("model", s.getModel());
         body.addProperty("stream", false);
         JsonObject opts = new JsonObject();
         opts.addProperty("temperature", s.getTemperature());
+        opts.addProperty("num_predict", maxTokens);
         body.add("options", opts);
         JsonArray msgs = new JsonArray();
         for (ChatMessage m : messages) {
@@ -134,9 +149,9 @@ public class LLMClient {
         return resp.getAsJsonObject("message").get("content").getAsString();
     }
 
-    private static String anthropicChat(List<ChatMessage> messages, LLMCopilotSettings s) throws Exception {
+    private static String anthropicChat(List<ChatMessage> messages, LLMCopilotSettings s, int maxTokens) throws Exception {
         String url = "https://api.anthropic.com/v1/messages";
-        String body = buildAnthropicBody(messages, s.getMaxTokens(), s.getModel(), s.getTemperature());
+        String body = buildAnthropicBody(messages, maxTokens, s.getModel(), s.getTemperature());
         String raw  = httpPost(url, body, Map.of(
             "x-api-key", s.getApiKey(),
             "anthropic-version", "2023-06-01"
@@ -145,17 +160,17 @@ public class LLMClient {
         return resp.getAsJsonArray("content").get(0).getAsJsonObject().get("text").getAsString();
     }
 
-    private static String mistralChat(List<ChatMessage> messages, LLMCopilotSettings s) throws Exception {
+    private static String mistralChat(List<ChatMessage> messages, LLMCopilotSettings s, int maxTokens) throws Exception {
         String url  = "https://api.mistral.ai/v1/chat/completions";
-        String body = buildOpenAIBody(messages, s.getMaxTokens(), s.getModel(), s.getTemperature());
+        String body = buildOpenAIBody(messages, maxTokens, s.getModel(), s.getTemperature());
         String raw  = httpPost(url, body, Map.of("Authorization", "Bearer " + s.getApiKey()));
         return extractOpenAIContent(raw);
     }
 
     // ── Google Gemini (OpenAI-compatible endpoint) ────────────────────────────
-    private static String geminiChat(List<ChatMessage> messages, LLMCopilotSettings s) throws Exception {
+    private static String geminiChat(List<ChatMessage> messages, LLMCopilotSettings s, int maxTokens) throws Exception {
         String model = s.getModel().isEmpty() ? "gemini-2.5-flash" : s.getModel();
-        String body  = buildOpenAIBody(messages, s.getMaxTokens(), model, s.getTemperature());
+        String body  = buildOpenAIBody(messages, maxTokens, model, s.getTemperature());
         String raw   = httpPost(
             "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
             body, Map.of("Authorization", "Bearer " + s.getApiKey()));
@@ -163,9 +178,9 @@ public class LLMClient {
     }
 
     // ── DeepSeek ──────────────────────────────────────────────────────────────
-    private static String deepseekChat(List<ChatMessage> messages, LLMCopilotSettings s) throws Exception {
+    private static String deepseekChat(List<ChatMessage> messages, LLMCopilotSettings s, int maxTokens) throws Exception {
         String model = s.getModel().isEmpty() ? "deepseek-chat" : s.getModel();
-        String body  = buildOpenAIBody(messages, s.getMaxTokens(), model, s.getTemperature());
+        String body  = buildOpenAIBody(messages, maxTokens, model, s.getTemperature());
         String raw   = httpPost(
             "https://api.deepseek.com/v1/chat/completions",
             body, Map.of("Authorization", "Bearer " + s.getApiKey()));
@@ -173,9 +188,9 @@ public class LLMClient {
     }
 
     // ── xAI Grok ──────────────────────────────────────────────────────────────
-    private static String grokChat(List<ChatMessage> messages, LLMCopilotSettings s) throws Exception {
+    private static String grokChat(List<ChatMessage> messages, LLMCopilotSettings s, int maxTokens) throws Exception {
         String model = s.getModel().isEmpty() ? "grok-3-mini" : s.getModel();
-        String body  = buildOpenAIBody(messages, s.getMaxTokens(), model, s.getTemperature());
+        String body  = buildOpenAIBody(messages, maxTokens, model, s.getTemperature());
         String raw   = httpPost(
             "https://api.x.ai/v1/chat/completions",
             body, Map.of("Authorization", "Bearer " + s.getApiKey()));
@@ -185,12 +200,12 @@ public class LLMClient {
     // ── Azure OpenAI ──────────────────────────────────────────────────────────
     // baseUrl = https://{resource}.openai.azure.com/openai/deployments/{deployment}
     // apiKey  = Azure API key
-    private static String azureChat(List<ChatMessage> messages, LLMCopilotSettings s) throws Exception {
+    private static String azureChat(List<ChatMessage> messages, LLMCopilotSettings s, int maxTokens) throws Exception {
         String base = s.getBaseUrl().replaceAll("/$", "");
         String url  = base + "/chat/completions?api-version=2024-12-01-preview";
         // Azure: model is part of the URL (deployment), not the body
         JsonObject body = new JsonObject();
-        body.addProperty("max_tokens", s.getMaxTokens());
+        body.addProperty("max_tokens", maxTokens);
         if (s.getTemperature() > 0) body.addProperty("temperature", s.getTemperature());
         JsonArray msgs = new JsonArray();
         for (ChatMessage m : messages) {
@@ -203,7 +218,7 @@ public class LLMClient {
         return extractOpenAIContent(raw);
     }
 
-    private static String openaiChat(List<ChatMessage> messages, LLMCopilotSettings s) throws Exception {
+    private static String openaiChat(List<ChatMessage> messages, LLMCopilotSettings s, int maxTokens) throws Exception {
         String base = switch (s.getProvider()) {
             case "openai"     -> "https://api.openai.com";
             case "groq"       -> "https://api.groq.com/openai";
@@ -211,7 +226,7 @@ public class LLMClient {
             default           -> s.getBaseUrl().replaceAll("/$","");
         };
         String url  = base + "/v1/chat/completions";
-        String body = buildOpenAIBody(messages, s.getMaxTokens(), s.getModel(), s.getTemperature());
+        String body = buildOpenAIBody(messages, maxTokens, s.getModel(), s.getTemperature());
         Map<String,String> hdrs = new HashMap<>();
         if (!s.getApiKey().isEmpty()) hdrs.put("Authorization", "Bearer " + s.getApiKey());
         if ("openrouter".equals(s.getProvider())) hdrs.put("X-Title", "LLM Copilot IntelliJ");
@@ -221,11 +236,11 @@ public class LLMClient {
 
     // ── Claude Code with auto-discovery ───────────────────────────────────────
 
-    private static String claudeCodeChat(List<ChatMessage> messages, LLMCopilotSettings s) throws Exception {
+    private static String claudeCodeChat(List<ChatMessage> messages, LLMCopilotSettings s, int maxTokens) throws Exception {
         ClaudeEndpoint ep = discoverClaudeEndpoint(s);
         String host = extractHost(s.getBaseUrl());
         String url  = "http://" + host + ":" + ep.port() + ep.path();
-        String body = buildClaudeBody(messages, 2048, s.getModel(), ep.isAnthropic());
+        String body = buildClaudeBody(messages, Math.max(maxTokens, 2048), s.getModel(), ep.isAnthropic());
         Map<String,String> hdrs = ep.isAnthropic() ? Map.of("anthropic-version","2023-06-01") : Map.of();
         try {
             String raw = httpPost(url, body, hdrs);
@@ -236,7 +251,7 @@ public class LLMClient {
                 cachedEndpoint.set(null); cachedBaseUrl = "";
                 ClaudeEndpoint ep2 = discoverClaudeEndpoint(s);
                 String url2  = "http://" + host + ":" + ep2.port() + ep2.path();
-                String body2 = buildClaudeBody(messages, 2048, s.getModel(), ep2.isAnthropic());
+                String body2 = buildClaudeBody(messages, Math.max(maxTokens, 2048), s.getModel(), ep2.isAnthropic());
                 Map<String,String> hdrs2 = ep2.isAnthropic() ? Map.of("anthropic-version","2023-06-01") : Map.of();
                 return extractContent(httpPost(url2, body2, hdrs2));
             }

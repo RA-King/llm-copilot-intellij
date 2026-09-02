@@ -100,6 +100,14 @@ public class PromptBuilder {
                                            String filename, String intent, int depth,
                                            String structuralGuide, String workspaceCtx,
                                            String keywordHint) {
+        return completionPrompt(prefix, suffix, lang, filename, intent, depth,
+                                structuralGuide, workspaceCtx, keywordHint, null);
+    }
+
+    public static String completionPrompt(String prefix, String suffix, String lang,
+                                           String filename, String intent, int depth,
+                                           String structuralGuide, String workspaceCtx,
+                                           String keywordHint, String intentReading) {
         String intentGuide;
         if (keywordHint != null && !keywordHint.isBlank()) {
             intentGuide = "The user just typed the keyword \"" + keywordHint + "\". " +
@@ -118,15 +126,22 @@ public class PromptBuilder {
               "// These signatures are real. Call them exactly as declared.\n" + workspaceCtx + "\n"
             : "";
 
+        String intentSection = (intentReading != null && !intentReading.isBlank())
+            ? "\n// ── What the code so far is working towards ──\n" + intentReading + "\n"
+            : "";
+
         return "You are an expert " + lang + " code completion engine.\n" +
                "Suggest ONLY new code — NEVER rewrite or alter existing code.\n\n" +
                (structuralGuide != null ? structuralGuide + "\n" : "") +
                intentGuide + "\n" +
                wsSection +
+               intentSection +
                "\nRules:\n" +
                "- Output ONLY raw code. No markdown, no backticks, no explanation.\n" +
                "- Match indentation and naming conventions exactly.\n" +
-               "- Never repeat code already above the cursor.\n\n" +
+               "- Never repeat code already above the cursor.\n" +
+               "- Continue the author's line of thought as described above; do not start a different one.\n" +
+               "- Suggest only as much code as that section asks for. Stopping early beats running past it.\n\n" +
                "File: " + filename + "\n\n" +
                "```" + lang + "\n" + prefix + "<CURSOR>" + suffix + "\n```\n\nCompletion:";
     }
