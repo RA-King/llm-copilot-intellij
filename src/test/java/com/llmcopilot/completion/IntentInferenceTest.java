@@ -22,8 +22,12 @@ import static org.junit.jupiter.api.Assertions.*;
 class IntentInferenceTest {
 
     private static Reading read(String textWithCaret) {
+        return read(textWithCaret, "java");
+    }
+
+    private static Reading read(String textWithCaret, String language) {
         FakeEditor.Fixture f = FakeEditor.withCaret(textWithCaret);
-        return IntentInference.read(f.editor(), f.offset());
+        return IntentInference.read(f.editor(), f.offset(), language);
     }
 
     @Nested
@@ -268,6 +272,172 @@ class IntentInferenceTest {
         void staysSilentWhereThereIsNothingToSay() {
             assertNull(IntentInference.render(Reading.EMPTY));
             assertNull(IntentInference.render(read("|")));
+        }
+    }
+
+    @Nested
+    @DisplayName("language coverage")
+    class LanguageCoverage {
+
+        /** The same job in each language: accumulate into a list inside a loop. */
+        private void assertReadsAccumulatingLoop(String language, String accumulator, String source) {
+            Reading r = read(source, language);
+
+            assertEquals(GoalKind.CREATE, r.goalKind(), language);
+            assertNotNull(r.openConstruct(), language);
+            assertEquals(ConstructKind.LOOP, r.openConstruct().kind(), language);
+            assertTrue(r.openConstruct().iterable().contains("users"), language + ": " + r.openConstruct());
+            assertNotNull(r.accumulator(), language);
+            assertEquals(accumulator, r.accumulator().name(), language);
+            assertTrue(r.nextSteps().get(0).contains(accumulator), language + ": " + r.nextSteps());
+        }
+
+        @Test
+        void java() {
+            assertReadsAccumulatingLoop("java", "names", """
+                class Orders {
+                    List<String> collectNames(List<User> users) {
+                        List<String> names = new ArrayList<>();
+                        for (User user : users) {
+                            |
+                        }
+                    }
+                }""");
+        }
+
+        @Test
+        void kotlin() {
+            assertReadsAccumulatingLoop("kotlin", "names", """
+                fun collectNames(users: List<User>): List<String> {
+                    val names = mutableListOf<String>()
+                    for (user in users) {
+                        |
+                    }
+                }""");
+        }
+
+        @Test
+        void typescript() {
+            assertReadsAccumulatingLoop("typescript", "names", """
+                function collectNames(users: User[]): string[] {
+                  const names: string[] = [];
+                  for (const user of users) {
+                    |
+                  }
+                }""");
+        }
+
+        @Test
+        void python() {
+            assertReadsAccumulatingLoop("python", "names", """
+                def collect_names(users):
+                    names = []
+                    for user in users:
+                        |
+                """);
+        }
+
+        @Test
+        void go() {
+            assertReadsAccumulatingLoop("go", "names", """
+                func collectNames(users []User) []string {
+                    names := []string{}
+                    for _, user := range users {
+                        |
+                    }
+                }""");
+        }
+
+        @Test
+        void rust() {
+            assertReadsAccumulatingLoop("rust", "names", """
+                fn collect_names(users: &[User]) -> Vec<String> {
+                    let mut names = Vec::new();
+                    for user in users {
+                        |
+                    }
+                }""");
+        }
+
+        @Test
+        void csharp() {
+            assertReadsAccumulatingLoop("csharp", "names", """
+                public List<string> CollectNames(List<User> users) {
+                    var names = new List<string>();
+                    foreach (var user in users) {
+                        |
+                    }
+                }""");
+        }
+
+        @Test
+        void php() {
+            assertReadsAccumulatingLoop("php", "$names", """
+                function collectNames(array $users): array {
+                    $names = [];
+                    foreach ($users as $user) {
+                        |
+                    }
+                }""");
+        }
+
+        @Test
+        void cpp() {
+            assertReadsAccumulatingLoop("cpp", "names", """
+                std::vector<std::string> collectNames(const std::vector<User>& users) {
+                    std::vector<std::string> names;
+                    for (const auto& user : users) {
+                        |
+                    }
+                }""");
+        }
+
+        @Test
+        void swift() {
+            assertReadsAccumulatingLoop("swift", "names", """
+                func collectNames(users: [User]) -> [String] {
+                    var names: [String] = []
+                    for user in users {
+                        |
+                    }
+                }""");
+        }
+
+        @Test
+        void scala() {
+            assertReadsAccumulatingLoop("scala", "names", """
+                def collectNames(users: List[User]): List[String] = {
+                  val names = scala.collection.mutable.ListBuffer[String]()
+                  for (user <- users) {
+                    |
+                  }
+                }""");
+        }
+
+        @Test
+        void readsAGoErrorBranchAsAnEarlyReturn() {
+            Reading r = read("""
+                func loadSettings(path string) (*Settings, error) {
+                    data, err := os.ReadFile(path)
+                    if err != nil {
+                        |
+                    }
+                }""", "go");
+
+            assertEquals(ConstructKind.BRANCH, r.openConstruct().kind());
+            assertTrue(r.nextSteps().get(0).contains("error"), r.nextSteps().toString());
+        }
+
+        @Test
+        void doesNotMistakeAForeachHeaderForTheEnclosingDeclaration() {
+            Reading r = read("""
+                function collectNames(array $users): array {
+                    foreach ($users as $user) {
+                        |
+                    }
+                }""", "php");
+
+            assertEquals("collect names", r.goal());
         }
     }
 }
