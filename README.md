@@ -36,6 +36,12 @@ The same reading decides how much to write: one line and a tight token ceiling
 mid-expression, a statement or two on a blank line in a body, the whole block on
 the line after an opening brace.
 
+The language-specific shapes it depends on live in one table, covering Java,
+Kotlin, Scala, Groovy, TypeScript, JavaScript, Python, C#, C, C++, Rust, Go,
+Ruby, PHP, Swift and Dart. `for (User user : users)`, `for _, user := range
+users`, `foreach ($users as $user)`, `users.each do |user|` and `for (user <-
+users)` are all read as the same thing: a loop over `users` binding `user`.
+
 **A duplication guard.** Models love to re-emit code that is already on screen.
 Three filters run over every suggestion before you see it: echoed prefixes are
 stripped, whole blocks that already exist above or below the caret are rejected,
@@ -273,14 +279,15 @@ first use, cached afterwards. This is how CI builds.
 ./gradlew test
 ```
 
-128 unit tests cover the logic that does not need a running IDE:
+200 unit tests cover the logic that does not need a running IDE:
 
 | Suite | What it pins down |
 |---|---|
 | `DuplicateGuardTest` | All three de-duplication levels, including whitespace-insensitive matching and preservation of trivial lines. |
 | `IndentUtilsTest` | Fence and label stripping, relative indent preservation, tab vs. space output. |
 | `StructureAnalyzerTest` | Container classification, suggestion selection, caret clamping. |
-| `IntentInferenceTest` | Name reading, the block the caret is in, unused parameters and locals, accumulator detection, suggestion shape, rendering. |
+| `IntentInferenceTest` | Name reading, the block the caret is in, unused parameters and locals, accumulator detection, suggestion shape, rendering, and the same accumulating loop read across eleven languages. |
+| `LanguageProfileTest` | Loop forms, local declarations, empty initialisers, void types, control-header detection and block style per language. |
 | `PromptBuilderTest` | Role structure, framework selection, diff truncation, completion-prompt branches. |
 | `LLMCopilotSettingsTest` | Shipped defaults and state round-tripping. |
 

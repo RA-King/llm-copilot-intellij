@@ -170,8 +170,9 @@ public class InlineCompletionHandler implements DocumentListener {
         // What the code so far is working towards. Text-based and cheap, so unlike the PSI
         // collector it answers even when the document is uncommitted or the language has no
         // reference resolution.
+        String language = LanguageUtils.getLanguageId(editor);
         IntentInference.Reading reading = LLMCopilotSettings.getInstance().isIntentInference()
-            ? IntentInference.read(editor, offset)
+            ? IntentInference.read(editor, offset, language)
             : IntentInference.Reading.EMPTY;
         final String intentReading = IntentInference.render(reading);
         final IntentInference.Shape shape = reading.shape();
@@ -192,7 +193,7 @@ public class InlineCompletionHandler implements DocumentListener {
         // getCharsSequence() is only safe to call on the EDT or under read lock.
         String fp  = doc.getText(new com.intellij.openapi.util.TextRange(prefStart, offset));
         String fs  = doc.getText(new com.intellij.openapi.util.TextRange(offset, sufEnd));
-        String lang   = LanguageUtils.getLanguageId(editor);
+        String lang   = language;
         String fname  = getFilename();
         String lp     = prefix;
         String kw     = keyword;

@@ -60,9 +60,24 @@ public class LanguageUtils {
             case "rs"           -> "rust";
             case "cpp","cc","cxx","h","hpp" -> "cpp";
             case "cs"           -> "csharp";
-            case "rb"           -> "ruby";
+            case "rb","rake","gemspec" -> "ruby";
             case "php"          -> "php";
             case "swift"        -> "swift";
+            case "scala","sc"   -> "scala";
+            case "groovy","gradle" -> "groovy";
+            case "dart"         -> "dart";
+            case "c"            -> "c";
+            case "m","mm"       -> "objective-c";
+            case "lua"          -> "lua";
+            case "ex","exs"     -> "elixir";
+            case "pl","pm"      -> "perl";
+            case "r"            -> "r";
+            case "sh","bash","zsh" -> "shellscript";
+            case "yml","yaml"   -> "yaml";
+            case "sql"          -> "sql";
+            case "hs"           -> "haskell";
+            case "nim"          -> "nim";
+            case "cr"           -> "crystal";
             default             -> ext.toLowerCase();
         };
     }
