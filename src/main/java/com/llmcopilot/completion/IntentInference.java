@@ -52,8 +52,12 @@ public final class IntentInference {
      */
     public enum Shape { EXPRESSION, STATEMENT, BLOCK }
 
-    /** A local or parameter, with its declared type when the language states one. */
-    public record Binding(String name, String type, int line) {}
+    /**
+     * A local, with its declared type when the language states one and the expression it
+     * was initialised to. The initialiser is carried rather than re-read from the line,
+     * because a name can start with a sigil ({@code $names}) that no word boundary matches.
+     */
+    public record Binding(String name, String type, String init, int line) {}
 
     /** The innermost still-open block above the caret. */
     public record OpenConstruct(ConstructKind kind, String header, int line,
@@ -234,16 +238,12 @@ public final class IntentInference {
       + "|(?:^|\\s)([A-Za-z_$][\\w$]*)\\s*(?:<[^>]*>)?\\s*\\([^;]*\\)\\s*(?:->|:)?[^;{]*\\{"
       + "|(?:^|\\s)([A-Za-z_$][\\w$]*)\\s*=\\s*(?:async\\s*)?\\(");
 
-    private static final Pattern CONTROL_KEYWORD = Pattern.compile(
-        "^(?:if|unless|for|foreach|while|do|loop|switch|match|when|try|begin|catch|except"
-      + "|rescue|else|elif|finally|ensure|with|using|return|yield)\\b");
-
     /** The declaration name on a header line, or {@code null} when it is not one. */
     static String functionNameOn(String rawLine) {
         // A closing brace can share the line with the keyword that follows it
         // (`} catch (IOException err) {`), so drop it before classifying.
         String line = stripLiterals(rawLine).trim().replaceFirst("^\\}\\s*", "");
-        if (CONTROL_KEYWORD.matcher(line).find()) return null;
+        if (LanguageProfile.isControlLine(line)) return null;
         Matcher m = FUNCTION_HEADER.matcher(line);
         if (!m.find()) return null;
         for (int g = 1; g <= m.groupCount(); g++) {
@@ -264,15 +264,29 @@ public final class IntentInference {
         Map.entry(Pattern.compile("^switch\\b|^match\\b|^when\\b"),                 ConstructKind.SWITCH),
         Map.entry(Pattern.compile("^with\\b|^using\\b"),                            ConstructKind.WITH));
 
-    private static boolean opensBlock(String text) {
-        return text.endsWith("{") || text.endsWith("(") || text.endsWith("[")
-            || text.endsWith(":") || text.matches(".*\\b(?:do|then)\\s*(?:\\|[^|]*\\|)?$");
+    private static boolean opensBlock(String text, String language) {
+        if (text.matches(".*\\b(?:do|then)\\s*(?:\\|[^|]*\\|)?$")) return true;
+        return switch (LanguageProfile.blockStyleFor(language)) {
+            case INDENT -> text.endsWith(":");
+            case END    -> text.matches("^(?:if|unless|while|until|for|case|begin|def)\\b.*");
+            case BRACE  -> text.endsWith("{") || text.endsWith("(") || text.endsWith("[") || text.endsWith(":");
+        };
     }
 
     /** Classifies an ancestor line as the block the caret is writing into. */
-    static OpenConstruct constructOn(String rawLine, int line) {
+    static OpenConstruct constructOn(String rawLine, int line, String language) {
         String text = stripLiterals(rawLine).trim();
-        if (!opensBlock(text)) return null;
+        if (!opensBlock(text, language)) return null;
+
+        // An iteration written as a method call with a block (`users.each do |u|`) is a
+        // loop by every meaning that matters here, not an anonymous callback.
+        if (!LanguageProfile.isControlLine(text)) {
+            LanguageProfile.LoopMatch loop = LanguageProfile.matchLoop(text);
+            if (loop != null) {
+                return new OpenConstruct(ConstructKind.LOOP, text, line, loop.binding(), loop.iterable(), "");
+            }
+        }
+
         for (Map.Entry<Pattern, ConstructKind> e : BLOCK_OPENERS) {
             if (!e.getKey().matcher(text).find()) continue;
             ConstructKind kind = e.getValue();
@@ -287,19 +301,13 @@ public final class IntentInference {
             return group(header, "(?:catch|except|rescue)\\s*\\(?\\s*(?:[\\w.]+\\s+(?:as\\s+)?)?([A-Za-z_$][\\w$]*)", 1);
         }
         if (kind != ConstructKind.LOOP) return "";
-        String name = group(header, "for\\s*\\(?\\s*(?:const|let|var|final|auto)?\\s*([A-Za-z_$][\\w$]*)\\s+(?:of|in)\\b", 1);
-        if (!name.isEmpty()) return name;
-        name = group(header, "for\\s+([A-Za-z_$][\\w$]*)\\s+in\\b", 1);
-        if (!name.isEmpty()) return name;
-        name = group(header, "for\\s*\\(\\s*(?:[\\w<>\\[\\].]+\\s+)?([A-Za-z_$][\\w$]*)\\s*:", 1);
-        if (!name.isEmpty()) return name;
-        return group(header, "for\\s*\\(\\s*(?:const|let|var|int|size_t)?\\s*([A-Za-z_$][\\w$]*)\\s*=", 1);
+        LanguageProfile.LoopMatch loop = LanguageProfile.matchLoop(header);
+        return loop == null ? "" : loop.binding();
     }
 
     private static String loopIterable(String header) {
-        String it = group(header, "\\b(?:of|in)\\s+([A-Za-z_$][\\w$.]*)", 1);
-        if (!it.isEmpty()) return it;
-        return group(header, ":\\s*([A-Za-z_$][\\w$.]*)\\s*\\)", 1);
+        LanguageProfile.LoopMatch loop = LanguageProfile.matchLoop(header);
+        return loop == null ? "" : loop.iterable();
     }
 
     private static String blockCondition(String header, ConstructKind kind) {
@@ -423,38 +431,15 @@ public final class IntentInference {
         return guards;
     }
 
-    private static final Pattern LOCAL_DECL = Pattern.compile(
-        "^(?:const|let|var|final|val|auto)\\s+([A-Za-z_$][\\w$]*)\\s*(?::\\s*([^=]+?))?\\s*="
-      + "|^([A-Z][\\w<>\\[\\],.]*)\\s+([a-z_$][\\w$]*)\\s*="
-      + "|^([a-z_$][\\w$]*)\\s*:?=\\s*");
-
     /** Locals declared between the header and the caret, in declaration order. */
     static List<Binding> localsIn(Document doc, int fromLine, int toLine) {
         List<Binding> out = new ArrayList<>();
         for (int i = fromLine; i <= toLine && i < doc.getLineCount(); i++) {
-            String text = stripLiterals(lineText(doc, i)).trim();
-            Matcher m = LOCAL_DECL.matcher(text);
-            if (!m.find()) continue;
-            if (m.group(1) != null)      out.add(new Binding(m.group(1), trimType(m.group(2)), i));
-            else if (m.group(4) != null) out.add(new Binding(m.group(4), trimType(m.group(3)), i));
-            else if (m.group(5) != null) out.add(new Binding(m.group(5), "", i));
+            LanguageProfile.LocalMatch local =
+                LanguageProfile.matchLocal(stripLiterals(lineText(doc, i)).trim());
+            if (local != null) out.add(new Binding(local.name(), local.type(), local.init(), i));
         }
         return out;
-    }
-
-    private static String trimType(String type) {
-        return type == null ? "" : type.trim();
-    }
-
-    private static final Pattern EMPTY_INIT = Pattern.compile(
-        "^(?:\\[\\]|\\{\\}|0|0\\.0|''|\"\"|``|new\\s+\\w+(?:<[^>]*>)?\\(\\s*\\)"
-      + "|make\\(|list\\(\\)|dict\\(\\)|set\\(\\)|\\w+::new\\(\\))");
-
-    /** The right-hand side of a declaration, for spotting something being filled in. */
-    private static String initialiserOf(Document doc, Binding binding) {
-        String line = stripLiterals(lineText(doc, binding.line()));
-        String rhs = group(line, "\\b" + Pattern.quote(binding.name()) + "\\b[^=]*=\\s*(.+?);?\\s*$", 1);
-        return rhs.trim();
     }
 
     /**
@@ -462,10 +447,10 @@ public final class IntentInference {
      * in — and when the caret is inside a loop that follows it, the statement being typed
      * is almost certainly the one that writes to it.
      */
-    private static Binding findAccumulator(Document doc, List<Binding> locals, OpenConstruct open) {
+    private static Binding findAccumulator(List<Binding> locals, OpenConstruct open) {
         List<Binding> candidates = new ArrayList<>();
         for (Binding b : locals) {
-            if (EMPTY_INIT.matcher(initialiserOf(doc, b)).find()) candidates.add(b);
+            if (LanguageProfile.isEmptyInitialiser(b.init(), b.type())) candidates.add(b);
         }
         if (candidates.isEmpty()) return null;
         if (open != null && open.kind() == ConstructKind.LOOP) {
@@ -476,16 +461,12 @@ public final class IntentInference {
         return candidates.get(candidates.size() - 1);
     }
 
-    private static final List<String> VOID_TYPES =
-        List.of("void", "none", "unit", "()", "undefined", "never", "");
-
     /**
      * Whether the declared result is still owed. Returns already written that are indented
      * deeper than the body are guards and branch exits, not the answer.
      */
     private static boolean owesReturn(String returnType, String body) {
-        String declared = returnType.trim().replaceAll("^(?:Promise|Future|Task)<|>$", "").trim();
-        if (VOID_TYPES.contains(declared.toLowerCase())) return false;
+        if (LanguageProfile.isVoidType(returnType)) return false;
         return !Pattern.compile("\\n {0,4}return\\s+\\S").matcher(body).find();
     }
 
@@ -506,16 +487,20 @@ public final class IntentInference {
 
     // ── Public entry point ────────────────────────────────────────────────────
 
-    /** Reads the caret. Never throws; an unreadable position yields {@link Reading#EMPTY}. */
-    public static Reading read(Editor editor, int offset) {
+    /**
+     * Reads the caret. Never throws; an unreadable position yields {@link Reading#EMPTY}.
+     * The language decides how blocks are delimited, so it has to be supplied — the caller
+     * already knows it, and resolving it here would need the platform.
+     */
+    public static Reading read(Editor editor, int offset, String language) {
         try {
-            return doRead(editor, offset);
+            return doRead(editor, offset, language);
         } catch (Exception | LinkageError e) {
             return Reading.EMPTY;
         }
     }
 
-    private static Reading doRead(Editor editor, int offset) {
+    private static Reading doRead(Editor editor, int offset, String language) {
         Document doc = editor.getDocument();
         if (doc.getLineCount() == 0) return Reading.EMPTY;
 
@@ -537,7 +522,7 @@ public final class IntentInference {
 
         OpenConstruct open = null;
         if (!ancestors.isEmpty() && ancestors.get(0) != headerLine) {
-            open = constructOn(lineText(doc, ancestors.get(0)), ancestors.get(0));
+            open = constructOn(lineText(doc, ancestors.get(0)), ancestors.get(0), language);
         }
 
         Shape shape = decideShape(prefix, open, caretLine);
@@ -562,7 +547,7 @@ public final class IntentInference {
             if (referenceCount(bodyText(doc, b.line() + 1, caretLine), b.name()) == 0) unusedLocals.add(b);
         }
 
-        Binding accumulator = findAccumulator(doc, locals, open);
+        Binding accumulator = findAccumulator(locals, open);
         int guards = countGuards(doc, headerLine + 1, caretLine);
         boolean owes = owesReturn(returnType(header, name), body);
 
