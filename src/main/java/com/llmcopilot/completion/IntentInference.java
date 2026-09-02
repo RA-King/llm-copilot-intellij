@@ -313,4 +313,193 @@ public final class IntentInference {
         Matcher m = Pattern.compile(regex).matcher(text);
         return m.find() && m.group(g) != null ? m.group(g) : "";
     }
+
+    // ── The signature ─────────────────────────────────────────────────────────
+
+    /** Joins a header that wrapped across lines, so its parameter list is complete. */
+    private static String headerText(Document doc, int line) {
+        StringBuilder sb = new StringBuilder(stripLiterals(lineText(doc, line)));
+        for (int i = line + 1; i < Math.min(line + 4, doc.getLineCount()); i++) {
+            if (balanced(sb.toString())) break;
+            sb.append(' ').append(stripLiterals(lineText(doc, i)).trim());
+        }
+        return sb.toString().trim();
+    }
+
+    private static boolean balanced(String text) {
+        int depth = 0;
+        boolean sawOpen = false;
+        for (char c : text.toCharArray()) {
+            if (c == '(') { depth++; sawOpen = true; }
+            else if (c == ')') depth--;
+        }
+        return sawOpen && depth <= 0;
+    }
+
+    /** The text between the parameter list's own parentheses. */
+    static String paramSource(String header) {
+        int open = -1, depth = 0;
+        for (int i = 0; i < header.length(); i++) {
+            char c = header.charAt(i);
+            if (c == '(') {
+                if (depth == 0 && open < 0) open = i;
+                depth++;
+            } else if (c == ')') {
+                depth--;
+                if (depth == 0 && open >= 0) return header.substring(open + 1, i);
+            }
+        }
+        return "";
+    }
+
+    /** Splits on commas that are not nested inside brackets or generics. */
+    static List<String> splitTopLevel(String source) {
+        List<String> out = new ArrayList<>();
+        int depth = 0, start = 0;
+        for (int i = 0; i < source.length(); i++) {
+            char c = source.charAt(i);
+            if (c == '(' || c == '[' || c == '<' || c == '{') depth++;
+            else if (c == ')' || c == ']' || c == '>' || c == '}') depth--;
+            else if (c == ',' && depth == 0) {
+                String chunk = source.substring(start, i).trim();
+                if (!chunk.isEmpty()) out.add(chunk);
+                start = i + 1;
+            }
+        }
+        String last = source.substring(start).trim();
+        if (!last.isEmpty()) out.add(last);
+        return out;
+    }
+
+    /**
+     * The parameter's name, whichever side of it the type sits on: {@code name: String},
+     * {@code final String name} and {@code String... names} all yield {@code name}.
+     */
+    static String paramName(String chunk) {
+        String text = chunk;
+        int eq = text.indexOf('=');
+        if (eq >= 0) text = text.substring(0, eq);
+        int colon = text.indexOf(':');
+        if (colon >= 0) text = text.substring(0, colon);
+        text = text.replaceAll("[*&]", " ").replaceAll("\\.\\.\\.", " ").trim();
+        if (text.isEmpty()) return "";
+        String[] words = text.split("[\\s\\[\\]]+");
+        for (int i = words.length - 1; i >= 0; i--) {
+            if (words[i].matches("[A-Za-z_$][\\w$]*")) return words[i];
+        }
+        return "";
+    }
+
+    /** The declared return type, read from either side of the name. */
+    static String returnType(String header, String name) {
+        String after = group(header, "\\)\\s*(?:->|:)\\s*([^{;]+?)\\s*[{;]?\\s*$", 1);
+        if (!after.isBlank()) return after.trim();
+
+        String before = group(header, "([\\w<>\\[\\],.?]+)\\s+" + Pattern.quote(name) + "\\s*\\(", 1);
+        if (before.isBlank()) return "";
+        if (before.matches("public|private|protected|static|final|abstract|synchronized|native|default|new")) return "";
+        return before;
+    }
+
+    // ── Progress through the body ─────────────────────────────────────────────
+
+    private static final Pattern GUARD =
+        Pattern.compile("^(?:if|unless)\\b.*\\b(?:return|throw|raise|panic|continue)\\b");
+
+    private static int countGuards(Document doc, int fromLine, int toLine) {
+        int guards = 0;
+        for (int i = fromLine; i <= toLine && i < doc.getLineCount(); i++) {
+            String text = stripLiterals(lineText(doc, i)).trim();
+            if (text.isEmpty()) continue;
+            if (GUARD.matcher(text).find()) { guards++; continue; }
+            if (text.matches("^(?:if|unless)\\b.*")
+                && stripLiterals(lineText(doc, i + 1)).trim().matches("^(?:return|throw|raise)\\b.*")) {
+                guards++;
+                continue;
+            }
+            if (!text.startsWith("}") && !text.startsWith(")") && !text.startsWith("]")) break;
+        }
+        return guards;
+    }
+
+    private static final Pattern LOCAL_DECL = Pattern.compile(
+        "^(?:const|let|var|final|val|auto)\\s+([A-Za-z_$][\\w$]*)\\s*(?::\\s*([^=]+?))?\\s*="
+      + "|^([A-Z][\\w<>\\[\\],.]*)\\s+([a-z_$][\\w$]*)\\s*="
+      + "|^([a-z_$][\\w$]*)\\s*:?=\\s*");
+
+    /** Locals declared between the header and the caret, in declaration order. */
+    static List<Binding> localsIn(Document doc, int fromLine, int toLine) {
+        List<Binding> out = new ArrayList<>();
+        for (int i = fromLine; i <= toLine && i < doc.getLineCount(); i++) {
+            String text = stripLiterals(lineText(doc, i)).trim();
+            Matcher m = LOCAL_DECL.matcher(text);
+            if (!m.find()) continue;
+            if (m.group(1) != null)      out.add(new Binding(m.group(1), trimType(m.group(2)), i));
+            else if (m.group(4) != null) out.add(new Binding(m.group(4), trimType(m.group(3)), i));
+            else if (m.group(5) != null) out.add(new Binding(m.group(5), "", i));
+        }
+        return out;
+    }
+
+    private static String trimType(String type) {
+        return type == null ? "" : type.trim();
+    }
+
+    private static final Pattern EMPTY_INIT = Pattern.compile(
+        "^(?:\\[\\]|\\{\\}|0|0\\.0|''|\"\"|``|new\\s+\\w+(?:<[^>]*>)?\\(\\s*\\)"
+      + "|make\\(|list\\(\\)|dict\\(\\)|set\\(\\)|\\w+::new\\(\\))");
+
+    /** The right-hand side of a declaration, for spotting something being filled in. */
+    private static String initialiserOf(Document doc, Binding binding) {
+        String line = stripLiterals(lineText(doc, binding.line()));
+        String rhs = group(line, "\\b" + Pattern.quote(binding.name()) + "\\b[^=]*=\\s*(.+?);?\\s*$", 1);
+        return rhs.trim();
+    }
+
+    /**
+     * A local initialised to an empty collection, zero or an empty string is being filled
+     * in — and when the caret is inside a loop that follows it, the statement being typed
+     * is almost certainly the one that writes to it.
+     */
+    private static Binding findAccumulator(Document doc, List<Binding> locals, OpenConstruct open) {
+        List<Binding> candidates = new ArrayList<>();
+        for (Binding b : locals) {
+            if (EMPTY_INIT.matcher(initialiserOf(doc, b)).find()) candidates.add(b);
+        }
+        if (candidates.isEmpty()) return null;
+        if (open != null && open.kind() == ConstructKind.LOOP) {
+            for (int i = candidates.size() - 1; i >= 0; i--) {
+                if (candidates.get(i).line() < open.line()) return candidates.get(i);
+            }
+        }
+        return candidates.get(candidates.size() - 1);
+    }
+
+    private static final List<String> VOID_TYPES =
+        List.of("void", "none", "unit", "()", "undefined", "never", "");
+
+    /**
+     * Whether the declared result is still owed. Returns already written that are indented
+     * deeper than the body are guards and branch exits, not the answer.
+     */
+    private static boolean owesReturn(String returnType, String body) {
+        String declared = returnType.trim().replaceAll("^(?:Promise|Future|Task)<|>$", "").trim();
+        if (VOID_TYPES.contains(declared.toLowerCase())) return false;
+        return !Pattern.compile("\\n {0,4}return\\s+\\S").matcher(body).find();
+    }
+
+    // ── How much to write ─────────────────────────────────────────────────────
+
+    private static final Pattern EXPRESSION_TAIL = Pattern.compile(
+        "[=(,\\[+\\-*/%<>!&|?]$|\\b(?:return|await|new|yield|throw|typeof)$|\\.\\w*$");
+
+    static Shape decideShape(String linePrefix, OpenConstruct open, int caretLine) {
+        String trimmed = linePrefix.trim();
+        if (trimmed.isEmpty()) {
+            return open != null && open.line() == caretLine - 1 ? Shape.BLOCK : Shape.STATEMENT;
+        }
+        if (trimmed.endsWith("{") || trimmed.endsWith(":")) return Shape.BLOCK;
+        if (EXPRESSION_TAIL.matcher(trimmed).find()) return Shape.EXPRESSION;
+        return Shape.STATEMENT;
+    }
 }
