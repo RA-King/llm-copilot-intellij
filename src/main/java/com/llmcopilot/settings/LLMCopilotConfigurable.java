@@ -13,7 +13,7 @@ public class LLMCopilotConfigurable implements Configurable {
 
     private JBTextField  fldModel, fldBaseUrl, fldClaudeBaseUrl, fldClaudePath, fldTestFW, fldEnabledLangs;
     private JBTextField  fldApiKey;   // plain text field — JBPasswordField has no int constructor
-    private JBCheckBox   chkEnabled, chkAutoTrigger, chkStatusBar, chkPsiContext;
+    private JBCheckBox   chkEnabled, chkAutoTrigger, chkStatusBar, chkPsiContext, chkIntentInference;
     private JSpinner     spnMaxTokens, spnTemperature, spnDebounce;
     private ComboBox<String> cmbProvider;
 
@@ -36,6 +36,11 @@ public class LLMCopilotConfigurable implements Configurable {
         chkEnabled       = new JBCheckBox("Enable LLM Copilot");
         chkAutoTrigger   = new JBCheckBox("Auto-trigger completions");
         chkStatusBar     = new JBCheckBox("Show status bar widget");
+        chkIntentInference = new JBCheckBox("Infer what the code so far is working towards");
+        chkIntentInference.setToolTipText(
+            "<html>Reads the job in the enclosing declaration's name, the parameters and locals "
+          + "nothing has used yet, the block the caret sits in and an unsatisfied return type, "
+          + "then tells the model what the next statement most likely does.</html>");
         chkPsiContext    = new JBCheckBox("Use IDE code analysis for completion context");
         chkPsiContext.setToolTipText(
             "Resolve the enclosing signature and referenced declarations through the language's "
@@ -65,6 +70,7 @@ public class LLMCopilotConfigurable implements Configurable {
             .addSeparator()
             .addComponent(chkAutoTrigger)
             .addComponent(chkPsiContext)
+            .addComponent(chkIntentInference)
             .addComponent(chkStatusBar)
             .addSeparator()
             .addLabeledComponent("Test framework:",     fldTestFW)
@@ -90,6 +96,7 @@ public class LLMCopilotConfigurable implements Configurable {
             || st.debounceMs       != (int)    spnDebounce.getValue()
             || st.autoTrigger      != chkAutoTrigger.isSelected()
             || st.psiContext       != chkPsiContext.isSelected()
+            || st.intentInference  != chkIntentInference.isSelected()
             || st.showStatusBar    != chkStatusBar.isSelected()
             || !st.testFramework.equals(fldTestFW.getText())
             || !st.enabledLanguages.equals(fldEnabledLangs.getText());
@@ -109,6 +116,7 @@ public class LLMCopilotConfigurable implements Configurable {
         st.debounceMs       = (int)    spnDebounce.getValue();
         st.autoTrigger      = chkAutoTrigger.isSelected();
         st.psiContext       = chkPsiContext.isSelected();
+        st.intentInference  = chkIntentInference.isSelected();
         st.showStatusBar    = chkStatusBar.isSelected();
         st.testFramework    = fldTestFW.getText().trim();
         st.enabledLanguages = fldEnabledLangs.getText().trim();
@@ -128,6 +136,7 @@ public class LLMCopilotConfigurable implements Configurable {
         spnDebounce.setValue(st.debounceMs);
         chkAutoTrigger.setSelected(st.autoTrigger);
         chkPsiContext.setSelected(st.psiContext);
+        chkIntentInference.setSelected(st.intentInference);
         chkStatusBar.setSelected(st.showStatusBar);
         fldTestFW.setText(st.testFramework);
         fldEnabledLangs.setText(st.enabledLanguages);

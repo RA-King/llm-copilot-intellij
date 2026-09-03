@@ -1,6 +1,7 @@
 package com.llmcopilot.completion;
 
 import com.intellij.openapi.editor.Document;
+import com.intellij.openapi.editor.Editor;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -51,8 +52,12 @@ public final class IntentInference {
      */
     public enum Shape { EXPRESSION, STATEMENT, BLOCK }
 
-    /** A local or parameter, with its declared type when the language states one. */
-    public record Binding(String name, String type, int line) {}
+    /**
+     * A local, with its declared type when the language states one and the expression it
+     * was initialised to. The initialiser is carried rather than re-read from the line,
+     * because a name can start with a sigil ({@code $names}) that no word boundary matches.
+     */
+    public record Binding(String name, String type, String init, int line) {}
 
     /** The innermost still-open block above the caret. */
     public record OpenConstruct(ConstructKind kind, String header, int line,
@@ -233,16 +238,12 @@ public final class IntentInference {
       + "|(?:^|\\s)([A-Za-z_$][\\w$]*)\\s*(?:<[^>]*>)?\\s*\\([^;]*\\)\\s*(?:->|:)?[^;{]*\\{"
       + "|(?:^|\\s)([A-Za-z_$][\\w$]*)\\s*=\\s*(?:async\\s*)?\\(");
 
-    private static final Pattern CONTROL_KEYWORD = Pattern.compile(
-        "^(?:if|unless|for|foreach|while|do|loop|switch|match|when|try|begin|catch|except"
-      + "|rescue|else|elif|finally|ensure|with|using|return|yield)\\b");
-
     /** The declaration name on a header line, or {@code null} when it is not one. */
     static String functionNameOn(String rawLine) {
         // A closing brace can share the line with the keyword that follows it
         // (`} catch (IOException err) {`), so drop it before classifying.
         String line = stripLiterals(rawLine).trim().replaceFirst("^\\}\\s*", "");
-        if (CONTROL_KEYWORD.matcher(line).find()) return null;
+        if (LanguageProfile.isControlLine(line)) return null;
         Matcher m = FUNCTION_HEADER.matcher(line);
         if (!m.find()) return null;
         for (int g = 1; g <= m.groupCount(); g++) {
@@ -263,15 +264,29 @@ public final class IntentInference {
         Map.entry(Pattern.compile("^switch\\b|^match\\b|^when\\b"),                 ConstructKind.SWITCH),
         Map.entry(Pattern.compile("^with\\b|^using\\b"),                            ConstructKind.WITH));
 
-    private static boolean opensBlock(String text) {
-        return text.endsWith("{") || text.endsWith("(") || text.endsWith("[")
-            || text.endsWith(":") || text.matches(".*\\b(?:do|then)\\s*(?:\\|[^|]*\\|)?$");
+    private static boolean opensBlock(String text, String language) {
+        if (text.matches(".*\\b(?:do|then)\\s*(?:\\|[^|]*\\|)?$")) return true;
+        return switch (LanguageProfile.blockStyleFor(language)) {
+            case INDENT -> text.endsWith(":");
+            case END    -> text.matches("^(?:if|unless|while|until|for|case|begin|def)\\b.*");
+            case BRACE  -> text.endsWith("{") || text.endsWith("(") || text.endsWith("[") || text.endsWith(":");
+        };
     }
 
     /** Classifies an ancestor line as the block the caret is writing into. */
-    static OpenConstruct constructOn(String rawLine, int line) {
+    static OpenConstruct constructOn(String rawLine, int line, String language) {
         String text = stripLiterals(rawLine).trim();
-        if (!opensBlock(text)) return null;
+        if (!opensBlock(text, language)) return null;
+
+        // An iteration written as a method call with a block (`users.each do |u|`) is a
+        // loop by every meaning that matters here, not an anonymous callback.
+        if (!LanguageProfile.isControlLine(text)) {
+            LanguageProfile.LoopMatch loop = LanguageProfile.matchLoop(text);
+            if (loop != null) {
+                return new OpenConstruct(ConstructKind.LOOP, text, line, loop.binding(), loop.iterable(), "");
+            }
+        }
+
         for (Map.Entry<Pattern, ConstructKind> e : BLOCK_OPENERS) {
             if (!e.getKey().matcher(text).find()) continue;
             ConstructKind kind = e.getValue();
@@ -286,19 +301,13 @@ public final class IntentInference {
             return group(header, "(?:catch|except|rescue)\\s*\\(?\\s*(?:[\\w.]+\\s+(?:as\\s+)?)?([A-Za-z_$][\\w$]*)", 1);
         }
         if (kind != ConstructKind.LOOP) return "";
-        String name = group(header, "for\\s*\\(?\\s*(?:const|let|var|final|auto)?\\s*([A-Za-z_$][\\w$]*)\\s+(?:of|in)\\b", 1);
-        if (!name.isEmpty()) return name;
-        name = group(header, "for\\s+([A-Za-z_$][\\w$]*)\\s+in\\b", 1);
-        if (!name.isEmpty()) return name;
-        name = group(header, "for\\s*\\(\\s*(?:[\\w<>\\[\\].]+\\s+)?([A-Za-z_$][\\w$]*)\\s*:", 1);
-        if (!name.isEmpty()) return name;
-        return group(header, "for\\s*\\(\\s*(?:const|let|var|int|size_t)?\\s*([A-Za-z_$][\\w$]*)\\s*=", 1);
+        LanguageProfile.LoopMatch loop = LanguageProfile.matchLoop(header);
+        return loop == null ? "" : loop.binding();
     }
 
     private static String loopIterable(String header) {
-        String it = group(header, "\\b(?:of|in)\\s+([A-Za-z_$][\\w$.]*)", 1);
-        if (!it.isEmpty()) return it;
-        return group(header, ":\\s*([A-Za-z_$][\\w$.]*)\\s*\\)", 1);
+        LanguageProfile.LoopMatch loop = LanguageProfile.matchLoop(header);
+        return loop == null ? "" : loop.iterable();
     }
 
     private static String blockCondition(String header, ConstructKind kind) {
@@ -312,5 +321,394 @@ public final class IntentInference {
     private static String group(String text, String regex, int g) {
         Matcher m = Pattern.compile(regex).matcher(text);
         return m.find() && m.group(g) != null ? m.group(g) : "";
+    }
+
+    // ── The signature ─────────────────────────────────────────────────────────
+
+    /** Joins a header that wrapped across lines, so its parameter list is complete. */
+    private static String headerText(Document doc, int line) {
+        StringBuilder sb = new StringBuilder(stripLiterals(lineText(doc, line)));
+        for (int i = line + 1; i < Math.min(line + 4, doc.getLineCount()); i++) {
+            if (balanced(sb.toString())) break;
+            sb.append(' ').append(stripLiterals(lineText(doc, i)).trim());
+        }
+        return sb.toString().trim();
+    }
+
+    private static boolean balanced(String text) {
+        int depth = 0;
+        boolean sawOpen = false;
+        for (char c : text.toCharArray()) {
+            if (c == '(') { depth++; sawOpen = true; }
+            else if (c == ')') depth--;
+        }
+        return sawOpen && depth <= 0;
+    }
+
+    /** The text between the parameter list's own parentheses. */
+    static String paramSource(String header) {
+        int open = -1, depth = 0;
+        for (int i = 0; i < header.length(); i++) {
+            char c = header.charAt(i);
+            if (c == '(') {
+                if (depth == 0 && open < 0) open = i;
+                depth++;
+            } else if (c == ')') {
+                depth--;
+                if (depth == 0 && open >= 0) return header.substring(open + 1, i);
+            }
+        }
+        return "";
+    }
+
+    /** Splits on commas that are not nested inside brackets or generics. */
+    static List<String> splitTopLevel(String source) {
+        List<String> out = new ArrayList<>();
+        int depth = 0, start = 0;
+        for (int i = 0; i < source.length(); i++) {
+            char c = source.charAt(i);
+            if (c == '(' || c == '[' || c == '<' || c == '{') depth++;
+            else if (c == ')' || c == ']' || c == '>' || c == '}') depth--;
+            else if (c == ',' && depth == 0) {
+                String chunk = source.substring(start, i).trim();
+                if (!chunk.isEmpty()) out.add(chunk);
+                start = i + 1;
+            }
+        }
+        String last = source.substring(start).trim();
+        if (!last.isEmpty()) out.add(last);
+        return out;
+    }
+
+    /**
+     * The parameter's name, whichever side of it the type sits on: {@code name: String},
+     * {@code final String name} and {@code String... names} all yield {@code name}.
+     */
+    static String paramName(String chunk) {
+        String text = chunk;
+        int eq = text.indexOf('=');
+        if (eq >= 0) text = text.substring(0, eq);
+        int colon = text.indexOf(':');
+        if (colon >= 0) text = text.substring(0, colon);
+        text = text.replaceAll("[*&]", " ").replaceAll("\\.\\.\\.", " ").trim();
+        if (text.isEmpty()) return "";
+        String[] words = text.split("[\\s\\[\\]]+");
+        for (int i = words.length - 1; i >= 0; i--) {
+            if (words[i].matches("[A-Za-z_$][\\w$]*")) return words[i];
+        }
+        return "";
+    }
+
+    /** The declared return type, read from either side of the name. */
+    static String returnType(String header, String name) {
+        String after = group(header, "\\)\\s*(?:->|:)\\s*([^{;]+?)\\s*[{;]?\\s*$", 1);
+        if (!after.isBlank()) return after.trim();
+
+        String before = group(header, "([\\w<>\\[\\],.?]+)\\s+" + Pattern.quote(name) + "\\s*\\(", 1);
+        if (before.isBlank()) return "";
+        if (before.matches("public|private|protected|static|final|abstract|synchronized|native|default|new")) return "";
+        return before;
+    }
+
+    // ── Progress through the body ─────────────────────────────────────────────
+
+    private static final Pattern GUARD =
+        Pattern.compile("^(?:if|unless)\\b.*\\b(?:return|throw|raise|panic|continue)\\b");
+
+    private static int countGuards(Document doc, int fromLine, int toLine) {
+        int guards = 0;
+        for (int i = fromLine; i <= toLine && i < doc.getLineCount(); i++) {
+            String text = stripLiterals(lineText(doc, i)).trim();
+            if (text.isEmpty()) continue;
+            if (GUARD.matcher(text).find()) { guards++; continue; }
+            if (text.matches("^(?:if|unless)\\b.*")
+                && stripLiterals(lineText(doc, i + 1)).trim().matches("^(?:return|throw|raise)\\b.*")) {
+                guards++;
+                continue;
+            }
+            if (!text.startsWith("}") && !text.startsWith(")") && !text.startsWith("]")) break;
+        }
+        return guards;
+    }
+
+    /** Locals declared between the header and the caret, in declaration order. */
+    static List<Binding> localsIn(Document doc, int fromLine, int toLine) {
+        List<Binding> out = new ArrayList<>();
+        for (int i = fromLine; i <= toLine && i < doc.getLineCount(); i++) {
+            LanguageProfile.LocalMatch local =
+                LanguageProfile.matchLocal(stripLiterals(lineText(doc, i)).trim());
+            if (local != null) out.add(new Binding(local.name(), local.type(), local.init(), i));
+        }
+        return out;
+    }
+
+    /**
+     * A local initialised to an empty collection, zero or an empty string is being filled
+     * in — and when the caret is inside a loop that follows it, the statement being typed
+     * is almost certainly the one that writes to it.
+     */
+    private static Binding findAccumulator(List<Binding> locals, OpenConstruct open) {
+        List<Binding> candidates = new ArrayList<>();
+        for (Binding b : locals) {
+            if (LanguageProfile.isEmptyInitialiser(b.init(), b.type())) candidates.add(b);
+        }
+        if (candidates.isEmpty()) return null;
+        if (open != null && open.kind() == ConstructKind.LOOP) {
+            for (int i = candidates.size() - 1; i >= 0; i--) {
+                if (candidates.get(i).line() < open.line()) return candidates.get(i);
+            }
+        }
+        return candidates.get(candidates.size() - 1);
+    }
+
+    /**
+     * Whether the declared result is still owed. Returns already written that are indented
+     * deeper than the body are guards and branch exits, not the answer.
+     */
+    private static boolean owesReturn(String returnType, String body) {
+        if (LanguageProfile.isVoidType(returnType)) return false;
+        return !Pattern.compile("\\n {0,4}return\\s+\\S").matcher(body).find();
+    }
+
+    // ── How much to write ─────────────────────────────────────────────────────
+
+    private static final Pattern EXPRESSION_TAIL = Pattern.compile(
+        "[=(,\\[+\\-*/%<>!&|?]$|\\b(?:return|await|new|yield|throw|typeof)$|\\.\\w*$");
+
+    static Shape decideShape(String linePrefix, OpenConstruct open, int caretLine) {
+        String trimmed = linePrefix.trim();
+        if (trimmed.isEmpty()) {
+            return open != null && open.line() == caretLine - 1 ? Shape.BLOCK : Shape.STATEMENT;
+        }
+        if (trimmed.endsWith("{") || trimmed.endsWith(":")) return Shape.BLOCK;
+        if (EXPRESSION_TAIL.matcher(trimmed).find()) return Shape.EXPRESSION;
+        return Shape.STATEMENT;
+    }
+
+    // ── Public entry point ────────────────────────────────────────────────────
+
+    /**
+     * Reads the caret. Never throws; an unreadable position yields {@link Reading#EMPTY}.
+     * The language decides how blocks are delimited, so it has to be supplied — the caller
+     * already knows it, and resolving it here would need the platform.
+     */
+    public static Reading read(Editor editor, int offset, String language) {
+        try {
+            return doRead(editor, offset, language);
+        } catch (Exception | LinkageError e) {
+            return Reading.EMPTY;
+        }
+    }
+
+    private static Reading doRead(Editor editor, int offset, String language) {
+        Document doc = editor.getDocument();
+        if (doc.getLineCount() == 0) return Reading.EMPTY;
+
+        int safeOffset = Math.max(0, Math.min(offset, doc.getTextLength()));
+        int caretLine  = doc.getLineNumber(safeOffset);
+        String rawLine = lineText(doc, caretLine);
+        int caretCol   = Math.max(0, Math.min(safeOffset - doc.getLineStartOffset(caretLine), rawLine.length()));
+        String prefix  = rawLine.substring(0, caretCol);
+
+        int caretIndent = prefix.isBlank() ? indentWidth(rawLine) : indentWidth(prefix);
+        List<Integer> ancestors = ancestorLines(doc, caretLine, caretIndent);
+
+        int headerLine = -1;
+        String name = "";
+        for (int line : ancestors) {
+            String candidate = functionNameOn(lineText(doc, line));
+            if (candidate != null) { headerLine = line; name = candidate; break; }
+        }
+
+        OpenConstruct open = null;
+        if (!ancestors.isEmpty() && ancestors.get(0) != headerLine) {
+            open = constructOn(lineText(doc, ancestors.get(0)), ancestors.get(0), language);
+        }
+
+        Shape shape = decideShape(prefix, open, caretLine);
+        if (headerLine < 0) {
+            return new Reading("", GoalKind.UNKNOWN, "", List.of(), List.of(), null, open,
+                               0, false, shape, List.of());
+        }
+
+        String header = headerText(doc, headerLine);
+        String body   = bodyText(doc, headerLine + 1, caretLine);
+        Named named   = classifyName(name);
+
+        List<String> unusedParams = new ArrayList<>();
+        for (String chunk : splitTopLevel(paramSource(header))) {
+            String param = paramName(chunk);
+            if (!param.isEmpty() && referenceCount(body, param) == 0) unusedParams.add(param);
+        }
+
+        List<Binding> locals = localsIn(doc, headerLine + 1, caretLine);
+        List<Binding> unusedLocals = new ArrayList<>();
+        for (Binding b : locals) {
+            if (referenceCount(bodyText(doc, b.line() + 1, caretLine), b.name()) == 0) unusedLocals.add(b);
+        }
+
+        Binding accumulator = findAccumulator(locals, open);
+        int guards = countGuards(doc, headerLine + 1, caretLine);
+        boolean owes = owesReturn(returnType(header, name), body);
+
+        Reading reading = new Reading(named.goal(), named.kind(), named.subject(),
+                                      List.copyOf(unusedParams), List.copyOf(unusedLocals),
+                                      accumulator, open, guards, owes, shape, List.of());
+        return new Reading(reading.goal(), reading.goalKind(), reading.subject(),
+                           reading.unusedParams(), reading.unusedLocals(), reading.accumulator(),
+                           reading.openConstruct(), reading.guardCount(), reading.returnPending(),
+                           reading.shape(), predictNextSteps(reading));
+    }
+
+    // ── Next-step prediction ──────────────────────────────────────────────────
+
+    /**
+     * Ranks plain-English hypotheses for the statement being typed. Each rule fires on
+     * evidence and stays silent without it, so a caret with nothing to say about it yields
+     * an empty list rather than filler.
+     */
+    static List<String> predictNextSteps(Reading r) {
+        List<String> steps = new ArrayList<>();
+        OpenConstruct oc = r.openConstruct();
+
+        Binding dangling = null;
+        for (Binding b : r.unusedLocals()) {
+            if (r.accumulator() == null || !b.name().equals(r.accumulator().name())) { dangling = b; break; }
+        }
+
+        if (oc != null && oc.kind() == ConstructKind.LOOP && r.accumulator() != null) {
+            String item = oc.binding().isEmpty() ? "the current element" : oc.binding();
+            add(steps, "add " + item + " to `" + r.accumulator().name()
+                     + "`, or skip it when it does not qualify");
+        } else if (oc != null && oc.kind() == ConstructKind.LOOP && !oc.binding().isEmpty()) {
+            add(steps, "do the per-item work on `" + oc.binding() + "`");
+        }
+
+        if (oc != null && oc.kind() == ConstructKind.BRANCH
+            && oc.condition().matches(".*\\b(?:err|error|e)\\b\\s*(?:!=\\s*nil|!==?\\s*(?:null|undefined)).*")) {
+            add(steps, "return early, passing the error on to the caller");
+        }
+        if (oc != null && oc.kind() == ConstructKind.CATCH) {
+            String err = oc.binding().isEmpty() ? "the error" : oc.binding();
+            add(steps, "handle `" + err + "` — log it, wrap it, or rethrow");
+        }
+        if (oc != null && oc.kind() == ConstructKind.TRY) {
+            add(steps, "perform the operation that can fail and keep its result");
+        }
+
+        if (dangling != null) {
+            add(steps, "use `" + dangling.name() + "`"
+                     + (dangling.type().isEmpty() ? "" : " (" + dangling.type() + ")")
+                     + " — it was just declared and nothing reads it yet");
+        }
+
+        if (r.guardCount() > 0 && !r.unusedParams().isEmpty()) {
+            add(steps, "guard `" + r.unusedParams().get(0) + "` in the same style as the checks above");
+        } else if (r.goalKind() == GoalKind.VALIDATE && !r.unusedParams().isEmpty()) {
+            add(steps, "check `" + r.unusedParams().get(0) + "` and reject it when invalid");
+        }
+
+        if (oc == null) {
+            String subject = r.subject().isBlank() ? "the value" : r.subject();
+            switch (r.goalKind()) {
+                case FETCH     -> add(steps, "retrieve " + subject + ", then return it");
+                case CREATE    -> add(steps, "construct " + subject + " and return it");
+                case TRANSFORM -> add(steps, "convert the input into " + subject + " and return it");
+                case COMPUTE   -> add(steps, "derive " + subject + " from the parameters and return it");
+                case PREDICATE -> add(steps, "return the boolean condition this method is named for");
+                case MUTATE    -> add(steps, "apply the change to " + subject);
+                case TEST      -> add(steps, "arrange the fixture, call the unit under test, then assert on the result");
+                default        -> { }
+            }
+        }
+
+        if (r.returnPending() && (oc == null || steps.isEmpty())) {
+            add(steps, dangling != null
+                ? "return `" + dangling.name() + "`"
+                : "return the value this method is declared to produce");
+        }
+
+        if (!r.unusedParams().isEmpty() && steps.isEmpty()) {
+            add(steps, "use the parameters that nothing has read yet: " + String.join(", ", r.unusedParams()));
+        }
+        return List.copyOf(steps);
+    }
+
+    private static void add(List<String> steps, String step) {
+        if (step != null && !step.isBlank() && steps.size() < 3 && !steps.contains(step)) steps.add(step);
+    }
+
+    // ── Rendering ─────────────────────────────────────────────────────────────
+
+    private static String shapeGuide(Shape shape) {
+        return switch (shape) {
+            case EXPRESSION -> "Finish the current expression only — one line, no trailing statements.";
+            case STATEMENT  -> "Write the next statement, or the two or three that clearly belong with it. "
+                             + "Do not write the rest of the method.";
+            case BLOCK      -> "Write the body of the block that was just opened.";
+        };
+    }
+
+    /**
+     * Renders the reading as a prompt section, or {@code null} when only the shape guide
+     * would remain — a caret this has no opinion about should cost no prompt budget.
+     */
+    public static String render(Reading r) {
+        if (r == null || r.isEmpty()) return null;
+        List<String> lines = new ArrayList<>();
+
+        if (!r.goal().isBlank() && r.goalKind() != GoalKind.UNKNOWN) {
+            lines.add("The enclosing declaration is named for one job: " + r.goal() + ".");
+        }
+
+        OpenConstruct oc = r.openConstruct();
+        if (oc != null) {
+            String detail = "";
+            if (oc.kind() == ConstructKind.LOOP && !oc.binding().isEmpty() && !oc.iterable().isEmpty()) {
+                detail = " over `" + oc.iterable() + "`, item `" + oc.binding() + "`";
+            } else if (oc.kind() == ConstructKind.CATCH && !oc.binding().isEmpty()) {
+                detail = " binding `" + oc.binding() + "`";
+            } else if (!oc.condition().isEmpty()) {
+                detail = " on `" + oc.condition() + "`";
+            }
+            lines.add("The caret is inside a " + oc.kind().name().toLowerCase() + detail + ".");
+        }
+
+        if (r.accumulator() != null) {
+            lines.add("`" + r.accumulator().name() + "` was initialised empty and is being filled in.");
+        }
+
+        if (!r.unusedParams().isEmpty()) {
+            lines.add("Parameters nothing has read yet: " + String.join(", ", r.unusedParams()) + ".");
+        }
+
+        List<String> loose = new ArrayList<>();
+        for (Binding b : r.unusedLocals()) {
+            if (r.accumulator() != null && b.name().equals(r.accumulator().name())) continue;
+            loose.add(b.type().isEmpty() ? b.name() : b.name() + ": " + b.type());
+            if (loose.size() == 4) break;
+        }
+        if (!loose.isEmpty()) lines.add("Declared but not yet used: " + String.join(", ", loose) + ".");
+
+        if (r.guardCount() > 0) {
+            lines.add(r.guardCount() + " guard clause" + (r.guardCount() > 1 ? "s" : "")
+                    + " already written at the top of the body.");
+        }
+        if (r.returnPending()) {
+            lines.add("The declared result has not been produced yet on the main path.");
+        }
+
+        if (!r.nextSteps().isEmpty()) {
+            StringBuilder sb = new StringBuilder("Most likely next: ");
+            for (int i = 0; i < r.nextSteps().size(); i++) {
+                if (i > 0) sb.append("; ");
+                sb.append('(').append(i + 1).append(") ").append(r.nextSteps().get(i));
+            }
+            lines.add(sb.append('.').toString());
+        }
+
+        if (lines.isEmpty()) return null;
+        lines.add(shapeGuide(r.shape()));
+        return String.join("\n", lines);
     }
 }

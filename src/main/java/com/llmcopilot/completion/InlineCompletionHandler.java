@@ -167,6 +167,16 @@ public class InlineCompletionHandler implements DocumentListener {
             intent = "completing-started";
         }
 
+        // What the code so far is working towards. Text-based and cheap, so unlike the PSI
+        // collector it answers even when the document is uncommitted or the language has no
+        // reference resolution.
+        String language = LanguageUtils.getLanguageId(editor);
+        IntentInference.Reading reading = LLMCopilotSettings.getInstance().isIntentInference()
+            ? IntentInference.read(editor, offset, language)
+            : IntentInference.Reading.EMPTY;
+        final String intentReading = IntentInference.render(reading);
+        final IntentInference.Shape shape = reading.shape();
+
         CodeContext psiCtx      = PsiCodeContextCollector.collect(editor, offset);
         String      psiGuide    = psiCtx.structuralGuide(textGuide);
         final String structGuide = psiGuide != null ? psiGuide : textGuide;
@@ -183,7 +193,7 @@ public class InlineCompletionHandler implements DocumentListener {
         // getCharsSequence() is only safe to call on the EDT or under read lock.
         String fp  = doc.getText(new com.intellij.openapi.util.TextRange(prefStart, offset));
         String fs  = doc.getText(new com.intellij.openapi.util.TextRange(offset, sufEnd));
-        String lang   = LanguageUtils.getLanguageId(editor);
+        String lang   = language;
         String fname  = getFilename();
         String lp     = prefix;
         String kw     = keyword;
@@ -193,7 +203,7 @@ public class InlineCompletionHandler implements DocumentListener {
         String intent2= intent;
 
         // ── Cache check (key includes line number to prevent cross-line hits)
-        String ctxTag   = "L" + line + "#" + Objects.hash(structGuide, relatedCtx) + ":";
+        String ctxTag   = "L" + line + "#" + Objects.hash(structGuide, relatedCtx, intentReading) + ":";
         String cacheKey = (ctxTag + fp).length() > 400
             ? ctxTag + fp.substring(fp.length() - 380)
             : ctxTag + fp;
@@ -206,12 +216,19 @@ public class InlineCompletionHandler implements DocumentListener {
         LLM_POOL.submit(() -> {
             if (generation.get() != gen) return;
             try {
-                String prompt = PromptBuilder.completionPrompt(fp, fs, lang, fname, intent2, 0, sg, related, kw);
-                String raw    = LLMClient.complete(prompt);
+                String prompt = PromptBuilder.completionPrompt(fp, fs, lang, fname, intent2, 0,
+                                                              sg, related, kw, intentReading);
+                String raw    = LLMClient.complete(prompt, tokenBudget(shape));
                 if (raw == null || raw.isBlank()) return;
                 if (generation.get() != gen) return;
 
                 String formatted = IndentUtils.reindent(raw, lp, editor);
+                // Mid-expression, anything past the first line is the model carrying on past
+                // the thought the author was in the middle of writing.
+                if (shape == IntentInference.Shape.EXPRESSION) {
+                    formatted = firstLine(formatted);
+                    if (formatted.isBlank()) return;
+                }
                 String guarded   = DuplicateGuard.guard(formatted, fp, fs, lp);
                 if (guarded == null || guarded.isBlank()) return;
                 if (generation.get() != gen) return;
@@ -225,6 +242,23 @@ public class InlineCompletionHandler implements DocumentListener {
                 }
             }
         });
+    }
+
+    /**
+     * How much room to give the model. Finishing a half-written expression needs a handful
+     * of tokens; the body of a block that was just opened needs the configured maximum.
+     */
+    private static int tokenBudget(IntentInference.Shape shape) {
+        return switch (shape) {
+            case EXPRESSION -> 64;
+            case STATEMENT  -> 160;
+            case BLOCK      -> Integer.MAX_VALUE;
+        };
+    }
+
+    private static String firstLine(String text) {
+        int nl = text.indexOf('\n');
+        return (nl < 0 ? text : text.substring(0, nl)).stripTrailing();
     }
 
     private static String buildStructGuide(StructureAnalyzer.StructureContext ctx) {

@@ -19,6 +19,29 @@ caret sits in a class body, an interface, an enum, a function body, or at top
 level, and asks the model for the appropriate thing — a constructor for an empty
 class, accessors for a class that already has fields, the next case for an enum.
 
+**Completions that follow your line of thought.** Before asking for anything, the
+plugin reads what the code so far is working towards. The verb in the enclosing
+declaration's name is a job — `fetchUserOrders` retrieves and returns,
+`validateEmail` checks and rejects, `collectActiveNames` accumulates into
+something. Against that reading it works out how far the body has got: parameters
+nothing has referenced yet, locals declared and never read, a list initialised
+empty just before the loop the caret sits in, guard clauses already written, and
+whether the declared return type has been satisfied on the main path. From those
+facts it states what the next statement most likely does — *add `user` to
+`result`, or skip it when it does not qualify*; *return early, passing the error
+on to the caller* — and the model is told to continue that thought rather than
+start a different one.
+
+The same reading decides how much to write: one line and a tight token ceiling
+mid-expression, a statement or two on a blank line in a body, the whole block on
+the line after an opening brace.
+
+The language-specific shapes it depends on live in one table, covering Java,
+Kotlin, Scala, Groovy, TypeScript, JavaScript, Python, C#, C, C++, Rust, Go,
+Ruby, PHP, Swift and Dart. `for (User user : users)`, `for _, user := range
+users`, `foreach ($users as $user)`, `users.each do |user|` and `for (user <-
+users)` are all read as the same thing: a loop over `users` binding `user`.
+
 **A duplication guard.** Models love to re-emit code that is already on screen.
 Three filters run over every suggestion before you see it: echoed prefixes are
 stripped, whole blocks that already exist above or below the caret are rejected,
@@ -140,6 +163,7 @@ model name and API key, and use **LLM Copilot: Test Connection** to confirm.
 | Context lines | `50` | Lines of file context sent with each request. |
 | Debounce | `600` ms | Idle time before a completion is requested. |
 | Auto-trigger | `true` | Off means completions only on the shortcut. |
+| Infer intent | `true` | Read what the code is working towards and tell the model what the next statement most likely does. |
 | Show status bar | `true` | Status widget in the bottom bar. |
 | Test framework | *(blank)* | Blank lets the model pick per language. |
 
@@ -255,13 +279,15 @@ first use, cached afterwards. This is how CI builds.
 ./gradlew test
 ```
 
-70 unit tests cover the logic that does not need a running IDE:
+200 unit tests cover the logic that does not need a running IDE:
 
 | Suite | What it pins down |
 |---|---|
 | `DuplicateGuardTest` | All three de-duplication levels, including whitespace-insensitive matching and preservation of trivial lines. |
 | `IndentUtilsTest` | Fence and label stripping, relative indent preservation, tab vs. space output. |
 | `StructureAnalyzerTest` | Container classification, suggestion selection, caret clamping. |
+| `IntentInferenceTest` | Name reading, the block the caret is in, unused parameters and locals, accumulator detection, suggestion shape, rendering, and the same accumulating loop read across eleven languages. |
+| `LanguageProfileTest` | Loop forms, local declarations, empty initialisers, void types, control-header detection and block style per language. |
 | `PromptBuilderTest` | Role structure, framework selection, diff truncation, completion-prompt branches. |
 | `LLMCopilotSettingsTest` | Shipped defaults and state round-tripping. |
 

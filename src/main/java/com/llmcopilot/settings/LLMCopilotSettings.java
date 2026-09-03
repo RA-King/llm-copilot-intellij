@@ -24,6 +24,8 @@ public class LLMCopilotSettings implements PersistentStateComponent<LLMCopilotSe
         public boolean autoTrigger      = true;
         /** Resolve types and signatures through the language's parser before completing. */
         public boolean psiContext       = true;
+        /** Read what the code so far is working towards and tell the model about it. */
+        public boolean intentInference  = true;
         public boolean showStatusBar    = true;
         public String  testFramework    = "";
         public String  enabledLanguages = "";
@@ -54,5 +56,7 @@ public class LLMCopilotSettings implements PersistentStateComponent<LLMCopilotSe
     public boolean isAutoTrigger()        { return myState.autoTrigger; }
     public boolean isPsiContext()         { return myState.psiContext; }
     public void    setPsiContext(boolean v) { myState.psiContext = v; }
+    public boolean isIntentInference()      { return myState.intentInference; }
+    public void    setIntentInference(boolean v) { myState.intentInference = v; }
     public String  getTestFramework()     { return myState.testFramework; }
 }
