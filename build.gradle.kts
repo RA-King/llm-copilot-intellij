@@ -4,7 +4,7 @@ plugins {
 }
 
 group   = "com.llmcopilot"
-version = "0.0.02"
+version = "0.0.03"
 
 repositories {
     mavenCentral()
