@@ -27,6 +27,16 @@ public class LLMCopilotSettings implements PersistentStateComponent<LLMCopilotSe
         /** Read what the code so far is working towards and tell the model about it. */
         public boolean intentInference  = true;
         public boolean showStatusBar    = true;
+        /** Watch run, debug and terminal consoles for failures worth offering help with. */
+        public boolean errorAssistEnabled   = true;
+        /** Raise a notification the moment something fails, rather than waiting to be asked. */
+        public boolean errorAssistAutoOffer = true;
+        /** How many candidate fixes the error pane lists. */
+        public int     errorSolutionCount   = 4;
+        /** Lines of source read around each failing line and sent with the error. */
+        public int     errorContextLines    = 40;
+        /** Most lines of captured output kept from one failure. */
+        public int     errorMaxOutputLines  = 120;
         public String  testFramework    = "";
         public String  enabledLanguages = "";
     }
@@ -59,4 +69,11 @@ public class LLMCopilotSettings implements PersistentStateComponent<LLMCopilotSe
     public boolean isIntentInference()      { return myState.intentInference; }
     public void    setIntentInference(boolean v) { myState.intentInference = v; }
     public String  getTestFramework()     { return myState.testFramework; }
+    public boolean isErrorAssistEnabled()   { return myState.errorAssistEnabled; }
+    public void    setErrorAssistEnabled(boolean v)   { myState.errorAssistEnabled = v; }
+    public boolean isErrorAssistAutoOffer() { return myState.errorAssistAutoOffer; }
+    public void    setErrorAssistAutoOffer(boolean v) { myState.errorAssistAutoOffer = v; }
+    public int     getErrorSolutionCount()  { return myState.errorSolutionCount; }
+    public int     getErrorContextLines()   { return myState.errorContextLines; }
+    public int     getErrorMaxOutputLines() { return myState.errorMaxOutputLines; }
 }
