@@ -96,6 +96,92 @@ public class PromptBuilder {
         );
     }
 
+    // ── Error assistance ─────────────────────────────────────────────────────
+
+    /**
+     * Everything known about a failure the user is looking at, gathered from a
+     * run, debug or terminal console and — where a frame pointed at a file in
+     * the project — the source around the line that threw.
+     */
+    public record ErrorContext(
+        /** Which console the output came from: "terminal", "run" or "debug". */
+        String source,
+        /** The run configuration, session or command that produced it. */
+        String origin,
+        /** Runtime or tool the trace format belongs to — node, python, compiler, … */
+        String runtime,
+        String headline,
+        /** The output itself, already trimmed to the part that matters. */
+        String errorText,
+        /** Source around the failing lines, fenced and labelled; "" when none resolved. */
+        String codeContext
+    ) { }
+
+    private static String describeFailure(ErrorContext ctx) {
+        String where = "debug".equals(ctx.source())
+            ? "Debug session: " + ctx.origin()
+            : ("terminal".equals(ctx.source()) ? "Terminal: " : "Console: ") + ctx.origin();
+
+        String code = ctx.codeContext().isBlank()
+            ? "\n\nNo file from the trace could be resolved in the project, so reason from the output alone."
+            : "\n\nThe source at the frames named above:\n" + ctx.codeContext();
+
+        return where + "\nRuntime: " + ctx.runtime() +
+               "\n\nOutput:\n```text\n" + ctx.errorText() + "\n```" + code;
+    }
+
+    /**
+     * Asks for a shortlist rather than an answer. The list is shown in a popup
+     * before anything longer is generated, so each entry has to read on one line
+     * and be distinct from the others — different causes, not one cause phrased
+     * three ways.
+     */
+    public static List<LLMClient.ChatMessage> errorSolutions(ErrorContext ctx, int count) {
+        return List.of(
+            sys("You are an expert debugging assistant. Given a failure and the code around it, propose " +
+                "exactly " + count + " distinct candidate fixes, most likely first. Each must address a " +
+                "different possible cause.\n\n" +
+                "Format each one as:\n" +
+                "1. Short imperative title, under ten words\n" +
+                "   One or two sentences: the cause you are proposing, and the change that fixes it.\n\n" +
+                "Name real identifiers, files and line numbers from the material you were given. " +
+                "No preamble, no closing summary, no code fences."),
+            usr(describeFailure(ctx))
+        );
+    }
+
+    /** The chosen entry, expanded into an answer with the actual edit in it. */
+    public static List<LLMClient.ChatMessage> errorWalkthrough(ErrorContext ctx, String title, String detail) {
+        return List.of(
+            sys("You are an expert debugging assistant working inside the IDE. State the cause in a " +
+                "sentence or two, then give the exact change as a code block fenced with the language " +
+                "name. Keep it to the smallest edit that fixes the failure, and say what to check next " +
+                "if the cause cannot be confirmed from what you were shown."),
+            usr(describeFailure(ctx) + "\n\nTake this approach:\n" + title +
+                (detail == null || detail.isBlank() ? "" : "\n" + detail) +
+                "\n\nShow me the change.")
+        );
+    }
+
+    /** No fix yet — just what the output means. */
+    public static List<LLMClient.ChatMessage> errorExplain(ErrorContext ctx) {
+        return List.of(
+            sys("You are an expert debugging assistant. Explain what the failure means and what sequence " +
+                "of events produces it, in plain language and few paragraphs. Do not propose a fix unless " +
+                "the cause is certain."),
+            usr(describeFailure(ctx))
+        );
+    }
+
+    /** A question of the user's own, carrying the failure as context. */
+    public static List<LLMClient.ChatMessage> errorQuestion(ErrorContext ctx, String question) {
+        return List.of(
+            sys("You are an expert debugging assistant working inside the IDE. Answer the question using " +
+                "the failure and code below. Be concise, and fence any code with the language name."),
+            usr(question + "\n\n" + describeFailure(ctx))
+        );
+    }
+
     public static String completionPrompt(String prefix, String suffix, String lang,
                                            String filename, String intent, int depth,
                                            String structuralGuide, String workspaceCtx,

@@ -79,6 +79,9 @@
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.lang</depends>
 
+    <!-- Right-click support in the terminal, where a terminal exists to right-click in. -->
+    <depends optional="true" config-file="llm-copilot-terminal.xml">org.jetbrains.plugins.terminal</depends>
+
     <extensions defaultExtensionNs="com.intellij">
 
         <!-- Inline completion -->
@@ -115,6 +118,12 @@
             displayType="BALLOON"/>
 
     </extensions>
+
+    <projectListeners>
+        <!-- Keeps the output of anything that runs or debugs and ends badly. -->
+        <listener class="com.llmcopilot.errors.RunOutputListener"
+                  topic="com.intellij.execution.ExecutionListener"/>
+    </projectListeners>
 
     <actions>
         <!-- Trigger inline completion -->
@@ -205,6 +214,24 @@
             <keyboard-shortcut keymap="$default" first-keystroke="ctrl SPACE"/>
         </action>
 
+        <!-- Explain the error in the console, terminal or debugger -->
+        <action id="LLMCopilot.ExplainError"
+                class="com.llmcopilot.actions.ExplainErrorAction"
+                text="LLM Copilot: Explain This Error"
+                description="Read the selected console or terminal error and offer candidate fixes">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt E"/>
+            <add-to-group group-id="ConsoleView.PopupMenu" anchor="last"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+
+        <!-- Pick from what has already failed -->
+        <action id="LLMCopilot.AnalyseRecentError"
+                class="com.llmcopilot.actions.AnalyseRecentErrorAction"
+                text="LLM Copilot: Analyse a Recent Error"
+                description="Choose from the failures captured from run, debug and terminal consoles">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+
         <!-- Commit message -->
         <action id="LLMCopilot.GenerateCommitMessage"
                 class="com.llmcopilot.actions.GenerateCommitMessageAction"
@@ -237,6 +264,7 @@
             <reference ref="LLMCopilot.ImplementInterface"/>
             <reference ref="LLMCopilot.GenerateTests"/>
             <separator/>
+            <reference ref="LLMCopilot.ExplainError"/>
             <reference ref="LLMCopilot.InlineChat"/>
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
         </group>

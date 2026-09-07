@@ -14,7 +14,8 @@ public class LLMCopilotConfigurable implements Configurable {
     private JBTextField  fldModel, fldBaseUrl, fldClaudeBaseUrl, fldClaudePath, fldTestFW, fldEnabledLangs;
     private JBTextField  fldApiKey;   // plain text field — JBPasswordField has no int constructor
     private JBCheckBox   chkEnabled, chkAutoTrigger, chkStatusBar, chkPsiContext, chkIntentInference;
-    private JSpinner     spnMaxTokens, spnTemperature, spnDebounce;
+    private JBCheckBox   chkErrorAssist, chkErrorAutoOffer;
+    private JSpinner     spnMaxTokens, spnTemperature, spnDebounce, spnErrorSolutions, spnErrorContext;
     private ComboBox<String> cmbProvider;
 
     private static final String[] PROVIDERS = {
@@ -46,6 +47,15 @@ public class LLMCopilotConfigurable implements Configurable {
             "Resolve the enclosing signature and referenced declarations through the language's "
             + "parser, so completions match real types. Results are cached per region; turn off "
             + "for the lowest possible latency.");
+        chkErrorAssist   = new JBCheckBox("Offer solutions for run, debug and terminal errors");
+        chkErrorAssist.setToolTipText(
+            "Reads a failed run or a selected error, resolves the files its trace names, and lists "
+            + "candidate fixes. Choosing one carries the error and its code into the chat window.");
+        chkErrorAutoOffer = new JBCheckBox("Notify as soon as something fails");
+        chkErrorAutoOffer.setToolTipText(
+            "Off: reach the pane from the console context menu or Ctrl+Alt+E instead.");
+        spnErrorSolutions = new JSpinner(new SpinnerNumberModel(4, 2, 8, 1));
+        spnErrorContext   = new JSpinner(new SpinnerNumberModel(40, 10, 200, 5));
         spnMaxTokens     = new JSpinner(new SpinnerNumberModel(256, 10, 4096, 10));
         spnTemperature   = new JSpinner(new SpinnerNumberModel(0.2, 0.0, 2.0, 0.05));
         spnDebounce      = new JSpinner(new SpinnerNumberModel(600, 100, 3000, 100));
@@ -73,6 +83,12 @@ public class LLMCopilotConfigurable implements Configurable {
             .addComponent(chkIntentInference)
             .addComponent(chkStatusBar)
             .addSeparator()
+            .addComponent(new JBLabel("<html><b>Error assistance</b></html>"))
+            .addComponent(chkErrorAssist)
+            .addComponent(chkErrorAutoOffer)
+            .addLabeledComponent("Candidate fixes:",    spnErrorSolutions)
+            .addLabeledComponent("Source context lines:", spnErrorContext)
+            .addSeparator()
             .addLabeledComponent("Test framework:",     fldTestFW)
             .addLabeledComponent("Enabled languages:",  fldEnabledLangs)
             .addComponentFillVertically(new JPanel(), 0)
@@ -98,6 +114,10 @@ public class LLMCopilotConfigurable implements Configurable {
             || st.psiContext       != chkPsiContext.isSelected()
             || st.intentInference  != chkIntentInference.isSelected()
             || st.showStatusBar    != chkStatusBar.isSelected()
+            || st.errorAssistEnabled   != chkErrorAssist.isSelected()
+            || st.errorAssistAutoOffer != chkErrorAutoOffer.isSelected()
+            || st.errorSolutionCount   != (int) spnErrorSolutions.getValue()
+            || st.errorContextLines    != (int) spnErrorContext.getValue()
             || !st.testFramework.equals(fldTestFW.getText())
             || !st.enabledLanguages.equals(fldEnabledLangs.getText());
     }
@@ -118,6 +138,10 @@ public class LLMCopilotConfigurable implements Configurable {
         st.psiContext       = chkPsiContext.isSelected();
         st.intentInference  = chkIntentInference.isSelected();
         st.showStatusBar    = chkStatusBar.isSelected();
+        st.errorAssistEnabled   = chkErrorAssist.isSelected();
+        st.errorAssistAutoOffer = chkErrorAutoOffer.isSelected();
+        st.errorSolutionCount   = (int) spnErrorSolutions.getValue();
+        st.errorContextLines    = (int) spnErrorContext.getValue();
         st.testFramework    = fldTestFW.getText().trim();
         st.enabledLanguages = fldEnabledLangs.getText().trim();
     }
@@ -138,6 +162,10 @@ public class LLMCopilotConfigurable implements Configurable {
         chkPsiContext.setSelected(st.psiContext);
         chkIntentInference.setSelected(st.intentInference);
         chkStatusBar.setSelected(st.showStatusBar);
+        chkErrorAssist.setSelected(st.errorAssistEnabled);
+        chkErrorAutoOffer.setSelected(st.errorAssistAutoOffer);
+        spnErrorSolutions.setValue(st.errorSolutionCount);
+        spnErrorContext.setValue(st.errorContextLines);
         fldTestFW.setText(st.testFramework);
         fldEnabledLangs.setText(st.enabledLanguages);
     }

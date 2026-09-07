@@ -53,6 +53,18 @@ a declaration and the plugin drafts a documentation comment for it. The result i
 shown in a preview dialog — nothing is written to your file until you click
 **Accept**, and the insert is a single undoable action.
 
+**Help with the error in front of you.** When a run or debug session ends badly,
+the plugin keeps the output. Right-click the error in the console — or select it
+in the terminal and press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>E</kbd> — and it is
+read for what it actually is: the exception and its message, the frames that name
+real files, and the source around the line that threw. What comes back is a short
+list of candidate fixes, one line each, most likely first, rather than one long
+answer that may have guessed the wrong cause. Choosing one carries the error, the
+resolved source and the chosen approach into the chat window, where the answer
+arrives with the edit in it and the conversation carries on. Java, Kotlin, Python,
+Node, Go, Rust, C#, Ruby, PHP, compiler diagnostics and Gradle/Maven/npm failures
+are all recognised.
+
 **Chat and code actions.** A tool window on the right for free-form conversation
 with the current file as context, plus one-shot actions over a selection: explain,
 fix, refactor with an instruction, generate unit tests, generate a constructor,
@@ -166,6 +178,10 @@ model name and API key, and use **LLM Copilot: Test Connection** to confirm.
 | Infer intent | `true` | Read what the code is working towards and tell the model what the next statement most likely does. |
 | Show status bar | `true` | Status widget in the bottom bar. |
 | Test framework | *(blank)* | Blank lets the model pick per language. |
+| Offer solutions for errors | `true` | Watch run, debug and terminal output for failures. |
+| Notify as soon as something fails | `true` | Off means the pane is reached from the menu or <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>E</kbd>. |
+| Candidate fixes | `4` | How many one-line fixes the error pane lists. |
+| Source context lines | `40` | Lines read around each failing line and sent with the error. |
 
 > **Note on API keys.** Keys are stored in the IDE's plugin settings file
 > (`LLMCopilot.xml`) as plain text, not in the OS keychain. Prefer a local
@@ -194,6 +210,7 @@ collide with your setup.
 | Generate doc comment | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> |
 | Generate unit tests | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> |
 | Generate commit message | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> |
+| Explain the error in the console or terminal | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>E</kbd> |
 
 <kbd>Tab</kbd> and <kbd>Esc</kbd> only belong to the plugin while a suggestion is
 on screen; otherwise they fall through to their normal behaviour.
@@ -201,6 +218,34 @@ on screen; otherwise they fall through to their normal behaviour.
 Fix Code, Generate Constructor, Generate Getters & Setters, Implement Interface,
 Toggle Enable/Disable, and Test Connection have no default shortcut. Reach them
 from the editor context menu under **LLM Copilot**, or bind them yourself.
+
+### Errors from the console, the debugger and the terminal
+
+Anything the IDE runs or debugs is watched: if the process exits non-zero — or
+exits cleanly but printed something that reads like a failure, which is how test
+runners that swallow their status behave — the output is kept and a notification
+offers to look at it.
+
+Three ways in:
+
+- **Right-click the error** in a run or debug console → **LLM Copilot: Explain
+  This Error**. A selection is used if there is one.
+- **Select it in the terminal** and press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>E</kbd>.
+  The terminal is not an editor, so the selection is taken through the same copy
+  handler <kbd>Ctrl</kbd>+<kbd>C</kbd> uses; the clipboard is put back afterwards.
+- **Tools → LLM Copilot: Analyse a Recent Error** lists every failure captured so
+  far, newest first, for one that has already scrolled away.
+
+The pane lists the candidate fixes plus **Explain this error** (what it means, no
+fix yet), **Ask something about it…**, **Open the failing file** at the line, and
+**Copy the error text**. Everything but the last two opens the chat window with
+the question already asked.
+
+Frames are resolved to real files before anything is sent: absolute paths
+directly, relative paths against the project root, and bare names — a Java trace
+only ever names `Order.java` — through the file-name index. Frames inside
+dependencies, the JDK and language runtimes are pushed behind your own code, so
+the source that gets sent is the source you wrote.
 
 ### Language support
 
@@ -279,7 +324,7 @@ first use, cached afterwards. This is how CI builds.
 ./gradlew test
 ```
 
-200 unit tests cover the logic that does not need a running IDE:
+236 unit tests cover the logic that does not need a running IDE:
 
 | Suite | What it pins down |
 |---|---|
@@ -290,6 +335,8 @@ first use, cached afterwards. This is how CI builds.
 | `LanguageProfileTest` | Loop forms, local declarations, empty initialisers, void types, control-header detection and block style per language. |
 | `PromptBuilderTest` | Role structure, framework selection, diff truncation, completion-prompt branches. |
 | `LLMCopilotSettingsTest` | Shipped defaults and state round-tripping. |
+| `ErrorParserTest` | Colour-code stripping, failure detection, capture trimming, and stack-trace reading for Node, Python, Java, .NET, Go, Rust, Ruby, compilers and build tools. |
+| `ErrorSolutionsTest` | Numbered lists, bullets and bolded headings, over-long titles, code fences, and the item limit. |
 
 Editor-dependent code is tested through `FakeEditor`, a helper that stubs the few
 `Editor` and `Document` methods the production code touches, so the suite runs in
@@ -305,6 +352,7 @@ An HTML report lands in `build/reports/tests/test/index.html`.
 src/main/java/com/llmcopilot/
 ├── completion/   ghost text, doc comments, structure analysis, key handling
 ├── chat/         tool window, editor context capture, code proposals
+├── errors/       error capture, trace parsing, the solutions pane
 ├── services/     LLMClient (all provider HTTP), PromptBuilder
 ├── settings/     persisted state and the settings UI
 ├── actions/      registered IDE actions
