@@ -172,6 +172,48 @@ public class LLMChatPanel extends JPanel {
         appendAssistantMessage(text, null);
     }
 
+    /**
+     * Starts a turn the user did not type. The error pane composes its own
+     * question — the failure, the source around it and the approach chosen —
+     * and hands it over whole; {@code display} is the shorter version that
+     * appears in the bubble. The reply joins the conversation like any other,
+     * so the user can carry straight on asking about it.
+     */
+    public void ask(String display, List<LLMClient.ChatMessage> messages) {
+        appendUserBubble(display);
+
+        LLMClient.ChatMessage question = null;
+        for (LLMClient.ChatMessage message : messages) {
+            if ("user".equals(message.role())) question = message;
+        }
+        history.add(new LLMClient.ChatMessage("user", question != null ? question.content() : display));
+
+        EditorContextProvider.EditorContext ctx = EditorContextProvider.getActive(project);
+        JLabel thinking = appendThinkingBubble();
+        sendBtn.setEnabled(false);
+
+        BG.submit(() -> {
+            try {
+                String resp = LLMClient.chat(messages);
+                if (resp == null || resp.isBlank()) resp = "(No response — check provider settings)";
+                history.add(new LLMClient.ChatMessage("assistant", resp));
+                final String finalResp = resp;
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    removeThinkingBubble(thinking);
+                    appendAssistantMessage(finalResp, ctx);
+                    sendBtn.setEnabled(true);
+                });
+            } catch (Exception ex) {
+                final String err = "Error: " + (ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName());
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    removeThinkingBubble(thinking);
+                    appendErrorBubble(err);
+                    sendBtn.setEnabled(true);
+                });
+            }
+        });
+    }
+
     // ── Context bar ───────────────────────────────────────────────────────────
 
     private void refreshContextBar() {

@@ -1,0 +1,12 @@
+<!--
+  Loaded only when the Terminal plugin is present. It adds the existing error
+  action to the terminal's own context menu, so an error printed by a shell
+  command can be right-clicked in the same way as one in a run console.
+-->
+<idea-plugin>
+    <actions>
+        <reference ref="LLMCopilot.ExplainError">
+            <add-to-group group-id="Terminal.OutputContextMenu" anchor="last"/>
+        </reference>
+    </actions>
+</idea-plugin>
