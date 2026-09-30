@@ -12,6 +12,7 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.ui.popup.JBPopupFactory;
 import com.intellij.openapi.wm.ToolWindow;
+import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.wm.ToolWindowManager;
 import com.intellij.ui.SimpleListCellRenderer;
 import com.llmcopilot.chat.LLMChatPanel;
@@ -24,6 +25,7 @@ import javax.swing.JList;
 
 import java.awt.datatransfer.StringSelection;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -84,7 +86,21 @@ public final class ErrorAssistant {
                 indicator.setText("Resolving the files the trace names…");
                 List<SourceLookup.FrameContext> frames =
                     SourceLookup.gather(project, parsed, settings.getErrorContextLines());
-                PromptBuilder.ErrorContext context = toContext(project, captured, parsed, frames);
+
+                // What the rest of the project says about the names in this
+                // failure. It is the difference between a fix written against
+                // the real signatures and one written against plausible ones,
+                // so it is gathered before the first ask rather than only when
+                // the user drills in.
+                indicator.setText("Reading the project around it…");
+                DeepContext.Gathered deep;
+                try {
+                    deep = DeepContext.gather(project, parsed, frames);
+                } catch (Exception ex) {
+                    deep = DeepContext.Gathered.EMPTY;
+                }
+
+                PromptBuilder.ErrorContext context = toContext(project, captured, parsed, frames, deep);
 
                 indicator.setText("Asking for candidate fixes…");
                 List<ErrorSolutions.Solution> solutions;
@@ -96,15 +112,17 @@ public final class ErrorAssistant {
                     return;
                 }
 
+                DeepContext.Gathered gathered = deep;
+                List<ErrorSolutions.Solution> found = solutions;
                 ApplicationManager.getApplication().invokeLater(() ->
-                    showPane(project, parsed, context, frames, solutions));
+                    showPane(project, parsed, context, frames, found, gathered));
             }
         });
     }
 
     // ── The pane ─────────────────────────────────────────────────────────────
 
-    private enum Kind { SOLUTION, EXPLAIN, ASK, OPEN, COPY }
+    private enum Kind { SOLUTION, DIAGNOSE, EXPLAIN, ASK, OPEN, GOTO, COPY }
 
     private record PaneItem(Kind kind, String title, String detail, ErrorSolutions.Solution solution) {
 
@@ -125,12 +143,26 @@ public final class ErrorAssistant {
                                  ErrorParser.ParsedError parsed,
                                  PromptBuilder.ErrorContext context,
                                  List<SourceLookup.FrameContext> frames,
-                                 List<ErrorSolutions.Solution> solutions) {
+                                 List<ErrorSolutions.Solution> solutions,
+                                 DeepContext.Gathered deep) {
         List<PaneItem> items = new ArrayList<>();
-        for (ErrorSolutions.Solution solution : solutions) {
-            items.add(new PaneItem(Kind.SOLUTION, solution.title(), solution.detail(), solution));
+        for (int i = 0; i < solutions.size(); i++) {
+            ErrorSolutions.Solution solution = solutions.get(i);
+            // Where the fix lands is more use in the second line than a
+            // ranking the user can already see from the order.
+            String detail = describeSolution(solution, i);
+            items.add(new PaneItem(Kind.SOLUTION, solution.title(), detail, solution));
         }
 
+        items.add(new PaneItem(Kind.DIAGNOSE, "Work it through properly",
+            deep.isEmpty()
+                ? "Full diagnosis: the sequence, the cause, the change, the fallout"
+                : "Full diagnosis against " + deep.resolvedNames().size() + " resolved name"
+                  + (deep.resolvedNames().size() == 1 ? "" : "s")
+                  + (deep.dependents().isEmpty() ? ""
+                     : " and " + deep.dependents().size() + " caller"
+                       + (deep.dependents().size() == 1 ? "" : "s")),
+            null));
         items.add(new PaneItem(Kind.EXPLAIN, "Explain this error",
             "What it means and how the program got here — no fix yet", null));
         items.add(new PaneItem(Kind.ASK, "Ask something about it…",
@@ -142,6 +174,14 @@ public final class ErrorAssistant {
                 "Open " + top.file().getName() + (top.frame().line() > 0 ? ":" + top.frame().line() : ""),
                 top.file().getPath(), null));
         }
+
+        // Anywhere else the answer named, reachable without leaving the pane.
+        for (ErrorSolutions.Solution target : namedTargets(project, solutions, top)) {
+            items.add(new PaneItem(Kind.GOTO,
+                "Open " + target.file() + (target.line() > 0 ? ":" + target.line() : ""),
+                "Named by one of the fixes above", target));
+        }
+
         items.add(new PaneItem(Kind.COPY, "Copy the error text", null, null));
 
         SimpleListCellRenderer<PaneItem> renderer = new SimpleListCellRenderer<>() {
@@ -171,6 +211,10 @@ public final class ErrorAssistant {
                 seedText(context, "**Fix to try:** " + item.solution().title()),
                 PromptBuilder.errorWalkthrough(context, item.solution().title(), item.solution().detail()));
 
+            case DIAGNOSE -> toChat(project,
+                seedText(context, "Work this through properly — cause, change, and what else it touches."),
+                PromptBuilder.errorDiagnosis(context));
+
             case EXPLAIN -> toChat(project,
                 seedText(context, "What is this error telling me?"),
                 PromptBuilder.errorExplain(context));
@@ -187,6 +231,18 @@ public final class ErrorAssistant {
                 int line = Math.max(0, top.frame().line() - 1);
                 int column = Math.max(0, top.frame().column() - 1);
                 new OpenFileDescriptor(project, top.file(), line, column).navigate(true);
+            }
+
+            case GOTO -> {
+                ErrorSolutions.Solution target = item.solution();
+                if (target == null || !target.hasTarget()) return;
+                VirtualFile file = findNamedFile(project, target.file());
+                if (file == null) {
+                    Messages.showWarningDialog(project,
+                        "Could not find " + target.file() + " in this project.", "LLM Copilot");
+                    return;
+                }
+                new OpenFileDescriptor(project, file, Math.max(0, target.line() - 1), 0).navigate(true);
             }
 
             case COPY -> java.awt.Toolkit.getDefaultToolkit().getSystemClipboard()
@@ -259,7 +315,8 @@ public final class ErrorAssistant {
     private static PromptBuilder.ErrorContext toContext(Project project,
                                                         CapturedError captured,
                                                         ErrorParser.ParsedError parsed,
-                                                        List<SourceLookup.FrameContext> frames) {
+                                                        List<SourceLookup.FrameContext> frames,
+                                                        DeepContext.Gathered deep) {
         StringBuilder code = new StringBuilder();
         String base = project.getBasePath();
 
@@ -282,6 +339,67 @@ public final class ErrorAssistant {
 
         return new PromptBuilder.ErrorContext(
             captured.source(), captured.origin(), parsed.origin().id(),
-            parsed.headline(), parsed.text(), code.toString());
+            parsed.headline(), parsed.text(), code.toString(), deep.text());
+    }
+
+    // ── Pane helpers ─────────────────────────────────────────────────────────
+
+    /** The pane's second line: where the fix lands, and how sure it is. */
+    private static String describeSolution(ErrorSolutions.Solution solution, int index) {
+        List<String> parts = new ArrayList<>();
+        if (solution.hasTarget()) {
+            String name = solution.file().substring(solution.file().lastIndexOf('/') + 1);
+            parts.add(name + (solution.line() > 0 ? ":" + solution.line() : ""));
+        }
+        if (!solution.confidence().isEmpty()) parts.add(solution.confidence());
+        else if (index == 0) parts.add("most likely");
+
+        String head = String.join(" \u00b7 ", parts);
+        if (solution.detail() == null || solution.detail().isBlank()) return head;
+        return head.isEmpty() ? solution.detail() : head + " — " + solution.detail();
+    }
+
+    /**
+     * Files the candidate fixes named that are not the one the trace already
+     * pointed at. A cause that lives one file away from the throw is common,
+     * and without this the pane makes the user go and find it.
+     */
+    private static List<ErrorSolutions.Solution> namedTargets(
+        Project project, List<ErrorSolutions.Solution> solutions, SourceLookup.FrameContext top
+    ) {
+        String already = top == null ? "" : top.file().getPath();
+        List<ErrorSolutions.Solution> out = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+
+        for (ErrorSolutions.Solution solution : solutions) {
+            if (!solution.hasTarget()) continue;
+            if (!seen.add(solution.file() + ":" + solution.line())) continue;
+            if (!already.isEmpty() && already.endsWith(solution.file())) continue;
+            out.add(solution);
+            if (out.size() >= 3) break;
+        }
+        return out;
+    }
+
+    /** A path the answer named, turned back into a file that exists. */
+    private static VirtualFile findNamedFile(Project project, String named) {
+        String cleaned = named.replace('\\', '/').replaceAll("^\\./", "");
+
+        VirtualFile base = com.intellij.openapi.project.ProjectUtil.guessProjectDir(project);
+        if (base != null) {
+            VirtualFile direct = base.findFileByRelativePath(cleaned);
+            if (direct != null) return direct;
+        }
+
+        String name = cleaned.substring(cleaned.lastIndexOf('/') + 1);
+        Collection<VirtualFile> matches = com.intellij.psi.search.FilenameIndex.getVirtualFilesByName(
+            name, com.intellij.psi.search.GlobalSearchScope.projectScope(project));
+
+        VirtualFile fallback = null;
+        for (VirtualFile match : matches) {
+            if (match.getPath().endsWith(cleaned)) return match;
+            if (fallback == null) fallback = match;
+        }
+        return fallback;
     }
 }

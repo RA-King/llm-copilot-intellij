@@ -114,8 +114,20 @@ public class PromptBuilder {
         /** The output itself, already trimmed to the part that matters. */
         String errorText,
         /** Source around the failing lines, fenced and labelled; "" when none resolved. */
-        String codeContext
-    ) { }
+        String codeContext,
+        /**
+         * What the rest of the project says about the names in this failure —
+         * where they are declared, what imports the failing file, what the
+         * project is. Empty when the index has not been built.
+         */
+        String projectContext
+    ) {
+        /** Four-field form, for the paths that have nothing from the index. */
+        public ErrorContext(String source, String origin, String runtime,
+                            String headline, String errorText, String codeContext) {
+            this(source, origin, runtime, headline, errorText, codeContext, "");
+        }
+    }
 
     private static String describeFailure(ErrorContext ctx) {
         String where = "debug".equals(ctx.source())
@@ -126,8 +138,11 @@ public class PromptBuilder {
             ? "\n\nNo file from the trace could be resolved in the project, so reason from the output alone."
             : "\n\nThe source at the frames named above:\n" + ctx.codeContext();
 
+        String project = ctx.projectContext() == null || ctx.projectContext().isBlank()
+            ? "" : "\n\n" + ctx.projectContext();
+
         return where + "\nRuntime: " + ctx.runtime() +
-               "\n\nOutput:\n```text\n" + ctx.errorText() + "\n```" + code;
+               "\n\nOutput:\n```text\n" + ctx.errorText() + "\n```" + code + project;
     }
 
     /**
@@ -138,14 +153,39 @@ public class PromptBuilder {
      */
     public static List<LLMClient.ChatMessage> errorSolutions(ErrorContext ctx, int count) {
         return List.of(
-            sys("You are an expert debugging assistant. Given a failure and the code around it, propose " +
-                "exactly " + count + " distinct candidate fixes, most likely first. Each must address a " +
-                "different possible cause.\n\n" +
+            sys("You are an expert debugging assistant. Given a failure, the code around it and what the " +
+                "rest of the project says about the names involved, propose exactly " + count + " distinct " +
+                "candidate fixes, most likely first. Each must address a different possible cause.\n\n" +
                 "Format each one as:\n" +
-                "1. Short imperative title, under ten words\n" +
+                "1. Short imperative title, under ten words [path/to/File.java:42] (likely)\n" +
                 "   One or two sentences: the cause you are proposing, and the change that fixes it.\n\n" +
-                "Name real identifiers, files and line numbers from the material you were given. " +
+                "The bracketed location is the single file and line the fix edits, written exactly as the " +
+                "material names it; leave the brackets out when no one line is the site of the change. " +
+                "The parenthesised word is your confidence: likely, possible or unlikely.\n\n" +
+                "Name real identifiers, files and line numbers from the material you were given, and use " +
+                "the declarations you were shown rather than inventing signatures. " +
                 "No preamble, no closing summary, no code fences."),
+            usr(describeFailure(ctx))
+        );
+    }
+
+    /**
+     * The full diagnosis, for when the shortlist has not settled it. Asks for
+     * the reasoning the shortlist deliberately leaves out — the sequence that
+     * produced the failure, what the project context rules in and out, and
+     * what the change would affect elsewhere.
+     */
+    public static List<LLMClient.ChatMessage> errorDiagnosis(ErrorContext ctx) {
+        return List.of(
+            sys("You are an expert debugging assistant with the failing code and the surrounding project " +
+                "in front of you. Work the problem through:\n" +
+                "1. What the runtime was doing when it failed, read off the trace.\n" +
+                "2. Which of the declarations you were shown are actually involved, and what they guarantee.\n" +
+                "3. The cause, stated plainly, with the evidence for it.\n" +
+                "4. The change — a fenced code block, smallest edit that fixes it.\n" +
+                "5. What else in the project the change affects, using the list of callers you were given.\n\n" +
+                "If the evidence does not settle the cause, say which candidates it is between and what " +
+                "single observation would distinguish them. Do not pad, and do not restate the error."),
             usr(describeFailure(ctx))
         );
     }
@@ -155,8 +195,10 @@ public class PromptBuilder {
         return List.of(
             sys("You are an expert debugging assistant working inside the IDE. State the cause in a " +
                 "sentence or two, then give the exact change as a code block fenced with the language " +
-                "name. Keep it to the smallest edit that fixes the failure, and say what to check next " +
-                "if the cause cannot be confirmed from what you were shown."),
+                "name. Keep it to the smallest edit that fixes the failure. Use the declarations you " +
+                "were shown rather than inventing signatures, and where a list of callers was given, say " +
+                "whether the change holds for them too. Say what to check next if the cause cannot be " +
+                "confirmed from what you were shown."),
             usr(describeFailure(ctx) + "\n\nTake this approach:\n" + title +
                 (detail == null || detail.isBlank() ? "" : "\n" + detail) +
                 "\n\nShow me the change.")
@@ -194,6 +236,15 @@ public class PromptBuilder {
                                            String filename, String intent, int depth,
                                            String structuralGuide, String workspaceCtx,
                                            String keywordHint, String intentReading) {
+        return completionPrompt(prefix, suffix, lang, filename, intent, depth,
+                                structuralGuide, workspaceCtx, keywordHint, intentReading, null, 0);
+    }
+
+    public static String completionPrompt(String prefix, String suffix, String lang,
+                                           String filename, String intent, int depth,
+                                           String structuralGuide, String workspaceCtx,
+                                           String keywordHint, String intentReading,
+                                           String projectCtx, int maxLines) {
         String intentGuide;
         if (keywordHint != null && !keywordHint.isBlank()) {
             intentGuide = "The user just typed the keyword \"" + keywordHint + "\". " +
@@ -216,14 +267,32 @@ public class PromptBuilder {
             ? "\n// ── What the code so far is working towards ──\n" + intentReading + "\n"
             : "";
 
+        String projectSection = (projectCtx != null && !projectCtx.isBlank())
+            ? "\n// ── Read from this project's own source (real declarations, not guesses) ──\n"
+              + projectCtx + "\n"
+            : "";
+
+        // Ghost text is read at a glance, mid-thought. A reply that runs past
+        // what the author was about to write is not a better suggestion, it is
+        // one they now have to read before they can dismiss it.
+        String lengthRule = maxLines <= 0 ? ""
+            : maxLines == 1
+                ? "- Reply with a single line. Finish the current expression and stop.\n"
+                : "- Reply with at most " + maxLines + " lines, and stop at the end of the thought the "
+                  + "author started — do not write the rest of the function.\n";
+
         return "You are an expert " + lang + " code completion engine.\n" +
                "Suggest ONLY new code — NEVER rewrite or alter existing code.\n\n" +
                (structuralGuide != null ? structuralGuide + "\n" : "") +
                intentGuide + "\n" +
+               projectSection +
                wsSection +
                intentSection +
                "\nRules:\n" +
                "- Output ONLY raw code. No markdown, no backticks, no explanation.\n" +
+               "- Use ONLY identifiers shown in the context above or that you declare yourself. " +
+               "Never invent a function, field or type that has not been shown to you.\n" +
+               lengthRule +
                "- Match indentation and naming conventions exactly.\n" +
                "- Never repeat code already above the cursor.\n" +
                "- Continue the author's line of thought as described above; do not start a different one.\n" +

@@ -117,12 +117,22 @@
             id="LLM Copilot"
             displayType="BALLOON"/>
 
+        <!-- Whole-project index: every declaration and import, read once in
+             the background so completions and error answers can use the real
+             signatures from anywhere in the codebase. -->
+        <postStartupActivity
+            implementation="com.llmcopilot.index.ProjectIndexStartup"/>
+
     </extensions>
 
     <projectListeners>
         <!-- Keeps the output of anything that runs or debugs and ends badly. -->
         <listener class="com.llmcopilot.errors.RunOutputListener"
                   topic="com.intellij.execution.ExecutionListener"/>
+
+        <!-- A saved file has new declarations in it; re-read just that one. -->
+        <listener class="com.llmcopilot.index.ProjectIndexStartup$SaveListener"
+                  topic="com.intellij.openapi.fileEditor.FileDocumentManagerListener"/>
     </projectListeners>
 
     <actions>
@@ -245,6 +255,22 @@
                 class="com.llmcopilot.actions.ToggleEnabledAction"
                 text="LLM Copilot: Toggle Enable/Disable"
                 description="Toggle LLM Copilot on or off"/>
+
+        <!-- Rebuild the whole-project index -->
+        <action id="LLMCopilot.RebuildProjectIndex"
+                class="com.llmcopilot.actions.RebuildProjectIndexAction"
+                text="LLM Copilot: Rebuild Project Index"
+                description="Re-read every declaration and import in the project">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+
+        <!-- What the index currently holds -->
+        <action id="LLMCopilot.ShowProjectIndexStatus"
+                class="com.llmcopilot.actions.ShowProjectIndexStatusAction"
+                text="LLM Copilot: Project Index Status"
+                description="How much of the project is indexed, and how fast completions are coming back">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
 
         <!-- Test connection -->
         <action id="LLMCopilot.TestConnection"

@@ -84,4 +84,50 @@ class ErrorSolutionsTest {
         assertTrue(ErrorSolutions.parse("", 4).isEmpty());
         assertTrue(ErrorSolutions.parse("I could not work out what went wrong.", 4).isEmpty());
     }
+
+    // ── Where the fix lands ──────────────────────────────────
+
+    @Test void carriesTheFileAndLineAFixNamesThroughToThePane() {
+        List<Solution> solutions = ErrorSolutions.parse(lines(
+            "1. Await the basket fetch [src/cart/Total.java:30] (likely)",
+            "   The call returns a future.",
+            "2. Widen the type [src/cart/Types.java] (possible)"
+        ), 6);
+
+        Solution first = solutions.get(0);
+        assertEquals("Await the basket fetch", first.title());
+        assertEquals("src/cart/Total.java", first.file());
+        assertEquals(30, first.line());
+        assertEquals("likely", first.confidence());
+        assertTrue(first.hasTarget());
+
+        Solution second = solutions.get(1);
+        assertEquals("src/cart/Types.java", second.file());
+        assertEquals(0, second.line());
+        assertEquals("possible", second.confidence());
+    }
+
+    @Test void leavesAPlainTitleAlone() {
+        Solution read = ErrorSolutions.readTarget("Await the fetch");
+        assertEquals("Await the fetch", read.title());
+        assertEquals("", read.file());
+        assertFalse(read.hasTarget());
+    }
+
+    @Test void ignoresBracketsThatAreNotAPath() {
+        Solution read = ErrorSolutions.readTarget("Handle the [empty] case");
+        assertEquals("Handle the [empty] case", read.title());
+        assertEquals("", read.file());
+    }
+
+    @Test void takesTheConfidenceWithoutALocation() {
+        Solution read = ErrorSolutions.readTarget("Rebuild the native module (unlikely)");
+        assertEquals("Rebuild the native module", read.title());
+        assertEquals("unlikely", read.confidence());
+    }
+
+    @Test void stripsTheSeparatorAModelLeavesBehind() {
+        assertEquals("Pin the dependency",
+            ErrorSolutions.readTarget("Pin the dependency — [pom.xml:12]").title());
+    }
 }
