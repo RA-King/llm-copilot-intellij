@@ -19,6 +19,52 @@ caret sits in a class body, an interface, an enum, a function body, or at top
 level, and asks the model for the appropriate thing — a constructor for an empty
 class, accessors for a class that already has fields, the next case for an enum.
 
+**Out of the way by default.** Ghost text is unasked-for text on the screen, in
+the middle of writing. What makes it tolerable is not how good the suggestions
+are, it is how reliably it refuses to appear where it would be in the way. One
+gate decides, so the debounce timer and the trigger logic always agree:
+
+| It stays quiet when | Why |
+|---|---|
+| Real code follows the caret on the line | Accepting would delete what you have already written. Whitespace and closing delimiters don't count — finishing an argument list from inside its own brackets is the normal case |
+| You are deleting, undoing or pasting | You are removing something; answering with more is the worst case for intrusiveness |
+| The caret is inside a string or a comment | Code completion there is noise |
+| You just pressed <kbd>Esc</kbd> on this line | The single most irritating thing an inline completion can do is come straight back. The refusal is remembered until you have typed six more characters, rewritten the line, or thirty seconds have passed |
+| You have typed one character after a `.` | The IDE's own completion list is instant, exact and already on screen |
+| Text is selected, or there is a second caret | You are doing something else |
+
+And when it does appear, it appears **below** the caret line rather than across
+the code beneath it. A multi-line suggestion occupies a block of its own: what
+is below is pushed down while it is showing and springs back when it is
+dismissed, so nothing you wrote is ever obscured and the suggestion reads as one
+unit instead of text scattered down the file.
+
+The length is bounded by where the caret is — one line mid-expression, up to
+three on a blank line in a body, up to twelve on the line after an opening
+brace. The ceiling is both asked for in the prompt and enforced on the reply: a
+model that writes past it is cut back at the last line where the snippet is
+still balanced, and dropped entirely if there is no such line. A block-sized
+answer is only allowed where a block was genuinely just opened; anywhere else it
+is demoted, because otherwise *suggest the next line* becomes *write the rest of
+the function*.
+
+**Snappy.** Two things make it feel immediate rather than merely fast. Typing
+through a suggestion costs no round trip at all — when you type the characters
+it was already proposing, the rest of that same suggestion is shown straight
+back, so the answer cannot change under your hands mid-word. And the wait before
+asking is measured rather than guessed: a fixed debounce is a guess at a number
+that depends entirely on the model behind it, so the wait now tracks the median
+round trip observed and slides between the shortest wait and the debounce you
+configured. **Tools → LLM Copilot: Project Index Status** reports what it has
+measured.
+
+**It knows the whole application.** Every declaration and import in the project
+is read once in the background and kept as a symbol table and a two-way import
+graph, so a completion can be given the *real* signature of anything in the
+codebase rather than a plausible-looking guess — and an error answer can be told
+where the names in the failure are declared and who calls the file that threw.
+See [The project index](#the-project-index).
+
 **Completions that follow your line of thought.** Before asking for anything, the
 plugin reads what the code so far is working towards. The verb in the enclosing
 declaration's name is a job — `fetchUserOrders` retrieves and returns,
@@ -59,11 +105,19 @@ in the terminal and press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>E</kbd> — and it
 read for what it actually is: the exception and its message, the frames that name
 real files, and the source around the line that threw. What comes back is a short
 list of candidate fixes, one line each, most likely first, rather than one long
-answer that may have guessed the wrong cause. Choosing one carries the error, the
-resolved source and the chosen approach into the chat window, where the answer
-arrives with the edit in it and the conversation carries on. Java, Kotlin, Python,
-Node, Go, Rust, C#, Ruby, PHP, compiler diagnostics and Gradle/Maven/npm failures
-are all recognised.
+answer that may have guessed the wrong cause. Each fix carries the file and line
+it edits and how sure the model is. Choosing one carries the error, the resolved
+source, the project context and the chosen approach into the chat window, where
+the answer arrives with the edit in it and the conversation carries on. Java,
+Kotlin, Python, Node, Go, Rust, C#, Ruby, PHP, compiler diagnostics and
+Gradle/Maven/npm failures are all recognised.
+
+The source at the failing line is the obvious context, and on its own it is
+rarely enough: a `NullPointerException` at `repo.findByCustomer(id)` cannot be
+answered from that line — the answer is in whatever `repo` is, what that type
+declares, and who constructed it. So the project index is consulted first and
+the real declaration of every name in the failure goes in with it, along with
+the files that import the failing one and the project's own manifest.
 
 **Chat and code actions.** A tool window on the right for free-form conversation
 with the current file as context, plus one-shot actions over a selection: explain,
@@ -182,6 +236,16 @@ model name and API key, and use **LLM Copilot: Test Connection** to confirm.
 | Notify as soon as something fails | `true` | Off means the pane is reached from the menu or <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>E</kbd>. |
 | Candidate fixes | `4` | How many one-line fixes the error pane lists. |
 | Source context lines | `40` | Lines read around each failing line and sent with the error. |
+| Send what the rest of the project says about the error | `true` | Attach where the names involved are declared, what imports the failing file, and the project manifest. |
+| Set the wait from how fast the model actually answers | `true` | The wait slides between the shortest wait below and the debounce above, based on the median round trip measured so far. |
+| Shortest wait | `150` ms | Floor for the adaptive wait. The debounce above remains the ceiling. |
+| Max statement lines | `3` | Most lines a statement-sized suggestion may occupy. |
+| Max block lines | `12` | Most lines a block-sized suggestion may occupy. |
+| Min identifier chars | `2` | How much of an identifier must be typed before ghost text is offered. |
+| Index the whole project | `true` | Read every declaration and import in the project so answers can use the real signatures. |
+| Max files | `4000` | Ceiling on what the index holds. |
+| Max file size | `256` KB | Larger files are skipped — generated bundles teach the model nothing. |
+| Chars per completion | `2400` | Project context sent with each completion. `0` leaves it on for errors only. |
 
 > **Note on API keys.** Keys are stored in the IDE's plugin settings file
 > (`LLMCopilot.xml`) as plain text, not in the OS keychain. Prefer a local
@@ -236,16 +300,70 @@ Three ways in:
 - **Tools → LLM Copilot: Analyse a Recent Error** lists every failure captured so
   far, newest first, for one that has already scrolled away.
 
-The pane lists the candidate fixes plus **Explain this error** (what it means, no
-fix yet), **Ask something about it…**, **Open the failing file** at the line, and
-**Copy the error text**. Everything but the last two opens the chat window with
-the question already asked.
+The pane lists the candidate fixes — each with the file and line it edits and
+how sure the model is — plus:
+
+- **Work it through properly** — the full diagnosis, which is the reasoning the
+  shortlist deliberately leaves out: what the runtime was doing, which of the
+  resolved declarations are actually involved, the cause with its evidence, the
+  change, and what else in the project the change affects. Where the evidence
+  does not settle it, the answer says which candidates it is between and what
+  one observation would tell them apart. The entry reports how much it has to
+  work with — *against 11 resolved names and 3 callers*.
+- **Explain this error** — what it means, no fix yet.
+- **Ask something about it…** — your own question, with everything attached.
+- **Open the failing file** at the line, plus **a jump to any other file a fix
+  named**. A cause that lives one file away from the throw is common.
+- **Copy the error text.**
+
+Everything but the last three opens the chat window with the question already
+asked.
 
 Frames are resolved to real files before anything is sent: absolute paths
 directly, relative paths against the project root, and bare names — a Java trace
 only ever names `Order.java` — through the file-name index. Frames inside
 dependencies, the JDK and language runtimes are pushed behind your own code, so
 the source that gets sent is the source you wrote.
+
+### The project index
+
+Most of the context above is about the caret: the declaration it is in, the
+types on the line, the block it sits inside. None of it can answer *where is
+`OrderRepository` declared*, *who calls this*, or *what is this project* — and
+those are the questions a deep answer turns on. It is the difference between a
+fix that compiles and a fix that is right.
+
+So the project's sources are read once, in the background after the window
+opens, and reduced to three things:
+
+- **A symbol table** — every class, interface, function, method, type and
+  constant, name to the file and *the declaration line itself*, so a lookup
+  returns something quotable rather than a path.
+- **An import graph, both ways** — forwards for what a file depends on,
+  backwards for what depends on it. The second is what *will this change break
+  anything* needs.
+- **A digest of the project's shape** — languages, top-level layout, manifests
+  and likely entry points, for the prompts that need orientation rather than
+  detail.
+
+Sixteen languages are read: Java, Kotlin, Scala, TypeScript, JavaScript,
+TSX/JSX, Python, C#, Rust, Go, Ruby, PHP, Swift, Dart, C and C++. It is regex
+over declaration lines rather than PSI, deliberately — IntelliJ IDEA Community
+has no parser for most of that list, and the index has to cope with files that
+do not currently compile. Anything subtler is the language's own resolver's
+job, which the plugin already asks for the file being edited.
+
+Nothing waits for it. The build is deferred until the IDE's own indices are
+done, because a project that is still indexing is already spending every core
+it has. Completions and error answers get sharper the moment it is ready and
+work without it until then. Saving a file re-reads that one file.
+
+Two actions under **Tools**:
+
+| Action | What it does |
+|---|---|
+| **LLM Copilot: Project Index Status** | Files and symbols held, how long the last build took, the project digest, and the measured ghost-text latency |
+| **LLM Copilot: Rebuild Project Index** | Re-reads everything. Only needed after the project changed outside the IDE |
 
 ### Language support
 
@@ -324,7 +442,7 @@ first use, cached afterwards. This is how CI builds.
 ./gradlew test
 ```
 
-236 unit tests cover the logic that does not need a running IDE:
+294 unit tests cover the logic that does not need a running IDE:
 
 | Suite | What it pins down |
 |---|---|
@@ -336,7 +454,10 @@ first use, cached afterwards. This is how CI builds.
 | `PromptBuilderTest` | Role structure, framework selection, diff truncation, completion-prompt branches. |
 | `LLMCopilotSettingsTest` | Shipped defaults and state round-tripping. |
 | `ErrorParserTest` | Colour-code stripping, failure detection, capture trimming, and stack-trace reading for Node, Python, Java, .NET, Go, Rust, Ruby, compilers and build tools. |
-| `ErrorSolutionsTest` | Numbered lists, bullets and bolded headings, over-long titles, code fences, and the item limit. |
+| `ErrorSolutionsTest` | Numbered lists, bullets and bolded headings, over-long titles, code fences, the item limit, and the `[file:line] (confidence)` each fix carries. |
+| `SuggestionGateTest` | Every reason ghost text refuses to appear — code after the caret, deletions, strings, comments, dismissals, short identifiers, selections — plus the line budget per shape and the balanced-cut trimming. |
+| `GhostTextPacingTest` | Dismissal memory and its release conditions, forward-typing detection, the latency-led debounce across fast, slow and middling models, and typing through a suggestion. |
+| `SourceSummaryTest` | Declaration and import extraction for Java, Kotlin, TypeScript, Python, Rust and Go, plus the import window and minified-line limits. |
 
 Editor-dependent code is tested through `FakeEditor`, a helper that stubs the few
 `Editor` and `Document` methods the production code touches, so the suite runs in
@@ -350,9 +471,11 @@ An HTML report lands in `build/reports/tests/test/index.html`.
 
 ```
 src/main/java/com/llmcopilot/
-├── completion/   ghost text, doc comments, structure analysis, key handling
+├── completion/   ghost text, the suggestion gate and its pacing, doc comments,
+│                 structure analysis, key handling
+├── index/        the whole-project symbol table and import graph
 ├── chat/         tool window, editor context capture, code proposals
-├── errors/       error capture, trace parsing, the solutions pane
+├── errors/       error capture, trace parsing, deep context, the solutions pane
 ├── services/     LLMClient (all provider HTTP), PromptBuilder
 ├── settings/     persisted state and the settings UI
 ├── actions/      registered IDE actions

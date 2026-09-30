@@ -112,6 +112,11 @@ public class LLMEditorFactoryListener implements EditorFactoryListener {
                                      @NotNull DataContext ctx) {
                 GhostTextManager ghost = GHOST.get(editor);
                 if (ghost != null && ghost.hasSuggestion()) {
+                    // Remember the refusal as well as obeying it: hiding the
+                    // ghost text does not change the document, so without this
+                    // every heuristic downstream still thinks a suggestion
+                    // belongs and offers the same one on the next keystroke.
+                    InlineCompletionHandler.recordDismissal(editor);
                     ghost.dismiss();
                     return; // consumed
                 }
@@ -138,9 +143,11 @@ public class LLMEditorFactoryListener implements EditorFactoryListener {
         return ghost != null && ghost.acceptSuggestion();
     }
 
-    /** Dismiss ghost text in editor. */
+    /** Dismiss ghost text in editor, remembering that the author said no. */
     public static void dismissSuggestion(Editor editor) {
         GhostTextManager ghost = GHOST.get(editor);
-        if (ghost != null) ghost.dismiss();
+        if (ghost == null) return;
+        if (ghost.hasSuggestion()) InlineCompletionHandler.recordDismissal(editor);
+        ghost.dismiss();
     }
 }

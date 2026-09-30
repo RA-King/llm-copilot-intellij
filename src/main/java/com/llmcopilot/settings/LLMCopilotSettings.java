@@ -37,6 +37,31 @@ public class LLMCopilotSettings implements PersistentStateComponent<LLMCopilotSe
         public int     errorContextLines    = 40;
         /** Most lines of captured output kept from one failure. */
         public int     errorMaxOutputLines  = 120;
+        /** Send the error together with what the rest of the project says about it. */
+        public boolean errorDeepContext     = true;
+        /** Characters of project context sent with an error. */
+        public int     errorProjectChars    = 4000;
+
+        // ── Ghost text ───────────────────────────────────────────────────────
+        /** Set the wait from measured latency instead of always using debounceMs. */
+        public boolean adaptiveDebounce   = true;
+        /** Shortest wait the adaptive debounce will settle on; debounceMs is the longest. */
+        public int     minDebounceMs      = 150;
+        /** Most lines a statement-sized suggestion may occupy. */
+        public int     maxStatementLines  = 3;
+        /** Most lines a block-sized suggestion may occupy. */
+        public int     maxBlockLines      = 12;
+        /** How much of an identifier must be typed before a suggestion is worth it. */
+        public int     minIdentifierChars = 2;
+
+        // ── Project index ────────────────────────────────────────────────────
+        /** Read the whole project's declarations and imports so answers can use them. */
+        public boolean projectIndexEnabled    = true;
+        public int     projectIndexMaxFiles   = 4000;
+        public int     projectIndexMaxFileKb  = 256;
+        /** Characters of project context sent with each completion. */
+        public int     projectCompletionChars = 2400;
+
         public String  testFramework    = "";
         public String  enabledLanguages = "";
     }
@@ -76,4 +101,20 @@ public class LLMCopilotSettings implements PersistentStateComponent<LLMCopilotSe
     public int     getErrorSolutionCount()  { return myState.errorSolutionCount; }
     public int     getErrorContextLines()   { return myState.errorContextLines; }
     public int     getErrorMaxOutputLines() { return myState.errorMaxOutputLines; }
+    public boolean isErrorDeepContext()     { return myState.errorDeepContext; }
+    public void    setErrorDeepContext(boolean v) { myState.errorDeepContext = v; }
+    public int     getErrorProjectChars()   { return myState.errorProjectChars; }
+
+    public boolean isAdaptiveDebounce()     { return myState.adaptiveDebounce; }
+    public void    setAdaptiveDebounce(boolean v) { myState.adaptiveDebounce = v; }
+    public int     getMinDebounceMs()       { return myState.minDebounceMs; }
+    public int     getMaxStatementLines()   { return myState.maxStatementLines; }
+    public int     getMaxBlockLines()       { return myState.maxBlockLines; }
+    public int     getMinIdentifierChars()  { return myState.minIdentifierChars; }
+
+    public boolean isProjectIndexEnabled()  { return myState.projectIndexEnabled; }
+    public void    setProjectIndexEnabled(boolean v) { myState.projectIndexEnabled = v; }
+    public int     getProjectIndexMaxFiles()      { return myState.projectIndexMaxFiles; }
+    public int     getProjectIndexMaxFileSizeKb() { return myState.projectIndexMaxFileKb; }
+    public int     getProjectCompletionChars()    { return myState.projectCompletionChars; }
 }

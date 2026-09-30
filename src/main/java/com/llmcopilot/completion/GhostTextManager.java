@@ -7,8 +7,8 @@ import com.intellij.openapi.editor.event.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * GhostTextManager – central authority for all ghost-text state.
@@ -55,27 +55,38 @@ public class GhostTextManager implements DocumentListener {
 
             String[] lines = fullText.split("\n", -1);
             InlayModel inlay = editor.getInlayModel();
+            int caretLine = doc.getLineNumber(caretOffset);
+            int lineEnd = doc.getLineEndOffset(caretLine);
 
-            int lineIdx = doc.getLineNumber(caretOffset);
+            // The first line of the suggestion belongs at the end of the
+            // caret's own line, where the author is typing.
+            inlay.addAfterLineEndElement(
+                lineEnd, true, new LLMInlineElement(lines[0], caretOffset, true));
 
-            for (int i = 0; i < lines.length; i++) {
-                String lineText = lines[i];
-                if (lineText.isEmpty() && i == lines.length - 1) continue; // skip trailing empty
+            // Everything after it goes in ONE block below that line.
+            //
+            // Hanging each continuation line off the end of the next physical
+            // line — which is what this did before — writes the suggestion
+            // across code the author has already written, so a five-line
+            // suggestion appeared smeared over five unrelated lines of real
+            // code. A block element takes space of its own instead: what is
+            // below is pushed down while the suggestion is on screen and
+            // springs back when it is dismissed, which is how the IDE's own
+            // previews behave.
+            List<String> rest = new ArrayList<>();
+            for (int i = 1; i < lines.length; i++) {
+                // A trailing newline is formatting, not a line to render.
+                if (i == lines.length - 1 && lines[i].isEmpty()) continue;
+                rest.add(lines[i]);
+            }
 
-                // Target physical line for this ghost line
-                int targetLine = lineIdx + i;
-                if (targetLine >= doc.getLineCount()) break;
-
-                int lineEnd = doc.getLineEndOffset(targetLine);
-
-                // Display text: for first line, show " " prefix so it's visually
-                // separated from existing text; subsequent lines show their content
-                String display = (i == 0 ? "" : "") + lineText;
-
-                inlay.addAfterLineEndElement(
-                    lineEnd, true,
-                    new LLMInlineElement(display, caretOffset, i == 0)
-                );
+            if (!rest.isEmpty()) {
+                inlay.addBlockElement(
+                    lineEnd,
+                    /* relatesToPrecedingText */ true,
+                    /* showAbove */ false,
+                    /* priority */ 0,
+                    new LLMBlockElement(rest));
             }
         });
     }
@@ -165,6 +176,8 @@ public class GhostTextManager implements DocumentListener {
         ((List<Inlay>) (List<?>) model.getAfterLineEndElementsInRange(0, len, LLMInlineElement.class))
             .forEach(Inlay::dispose);
         ((List<Inlay>) (List<?>) model.getInlineElementsInRange(0, len, LLMInlineElement.class))
+            .forEach(Inlay::dispose);
+        ((List<Inlay>) (List<?>) model.getBlockElementsInRange(0, len, LLMBlockElement.class))
             .forEach(Inlay::dispose);
     }
 

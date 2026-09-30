@@ -19,7 +19,17 @@ public final class ErrorSolutions {
 
     private ErrorSolutions() { }
 
-    public record Solution(String title, String detail) { }
+    /**
+     * One candidate fix. {@code file} and {@code line} are where the model
+     * said the edit lands, and {@code confidence} how sure it said it was;
+     * all three are optional, because a model that ignores the format loses
+     * the jump-to-the-edit entry in the pane and nothing else.
+     */
+    public record Solution(String title, String detail, String file, int line, String confidence) {
+        public Solution(String title, String detail) { this(title, detail, "", 0, ""); }
+
+        public boolean hasTarget() { return file != null && !file.isEmpty(); }
+    }
 
     /** {@code 1.} / {@code 2)} / {@code - } / {@code Fix 3:} — every way a model numbers a list. */
     private static final Pattern ITEM_START = Pattern.compile(
@@ -31,6 +41,14 @@ public final class ErrorSolutions {
 
     /** The point in an over-long title where it can be cut. */
     private static final Pattern SENTENCE_END = Pattern.compile("[.;:] ");
+
+    /** {@code [path/to/File.java:42]} — where the fix lands. */
+    private static final Pattern LOCATION = Pattern.compile("\\[([^\\]\\s]+?)(?::(\\d+))?\\]");
+    /** {@code (likely)} — how sure the model said it was. */
+    private static final Pattern CONFIDENCE = Pattern.compile(
+        "\\((likely|possible|unlikely)\\)", Pattern.CASE_INSENSITIVE);
+    /** A path has a separator in it; plain bracketed prose does not. */
+    private static final Pattern LOOKS_LIKE_PATH = Pattern.compile("[./\\\\]");
 
     private static final int MAX_TITLE = 80;
 
@@ -64,10 +82,40 @@ public final class ErrorSolutions {
         List<Solution> solutions = new ArrayList<>();
         for (String[] entry : collected) {
             if (entry[0].isEmpty()) continue;
-            solutions.add(shorten(entry[0], entry[1]));
+            Solution target = readTarget(entry[0]);
+            Solution shortened = shorten(target.title(), entry[1]);
+            solutions.add(new Solution(shortened.title(), shortened.detail(),
+                target.file(), target.line(), target.confidence()));
             if (solutions.size() >= limit) break;
         }
         return solutions;
+    }
+
+    /**
+     * Pull the {@code [file:line]} and {@code (likely)} the solutions prompt
+     * asks for out of a title, leaving the title itself readable.
+     */
+    public static Solution readTarget(String rawTitle) {
+        String title = rawTitle;
+        String file = "";
+        int line = 0;
+        String confidence = "";
+
+        Matcher located = LOCATION.matcher(title);
+        if (located.find() && LOOKS_LIKE_PATH.matcher(located.group(1)).find()) {
+            file = located.group(1);
+            line = located.group(2) == null ? 0 : Integer.parseInt(located.group(2));
+            title = title.replace(located.group(0), "").trim();
+        }
+
+        Matcher sureness = CONFIDENCE.matcher(title);
+        if (sureness.find()) {
+            confidence = sureness.group(1).toLowerCase(java.util.Locale.ROOT);
+            title = title.replace(sureness.group(0), "").trim();
+        }
+
+        title = title.replaceAll("[\\s\u2014\u2013-]+$", "").trim();
+        return new Solution(title, "", file, line, confidence);
     }
 
     /** Moves the tail of an over-long title into its detail. */
