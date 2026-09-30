@@ -1,7 +1,6 @@
 <idea-plugin>
     <id>com.llmcopilot</id>
     <name>LLM Copilot</name>
-    <version>2.0.0</version>
     <vendor email="llmcopilot@example.com" url="https://github.com/llm-copilot">LLM Copilot</vendor>
 
     <description><![CDATA[
