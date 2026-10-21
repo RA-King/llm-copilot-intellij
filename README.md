@@ -125,6 +125,63 @@ fix, refactor with an instruction, generate unit tests, generate a constructor,
 generate getters and setters one field at a time, implement interface methods, and
 write a commit message from the current diff.
 
+Replies stream into the chat as the model writes them, and **Send** turns into
+**Stop** while one is arriving — stopping keeps what has been written so far.
+Slash commands work on the selection: `/fix`, `/explain`, `/refactor <how>`,
+`/test [framework]`, `/doc`, `/optimize`, `/new <what>`, `/commit`, `/clear` and
+`/help`. References pull material into any question, typed anywhere in it:
+
+| Reference | Attaches |
+|---|---|
+| `#file:src/App.java` | That file in full (quote paths with spaces: `#file:"my file.txt"`) |
+| `#selection` | The editor selection |
+| `#codebase` | The declarations in the [project index](#the-project-index) that match the question |
+| `#problems` | The errors and warnings in the active file |
+| `#changes` | The uncommitted git diff |
+| `#terminalLastCommand` | The last failure captured from a run, debug or terminal console |
+
+**Repository instructions and prompt files.** The plugin reads the same files
+GitHub Copilot does, so a repository set up for one works with the other.
+`.github/copilot-instructions.md` and `AGENTS.md` apply to every chat request;
+`.github/instructions/*.instructions.md` apply to requests about files matching
+the `applyTo` globs in their header:
+
+```markdown
+---
+applyTo: "**/*.kt, buildSrc/**"
+---
+Prefer data classes and sealed hierarchies. No platform types in public APIs.
+```
+
+Prompt files in `.github/prompts/<name>.prompt.md` become `/<name>` in the chat.
+Their variables use Copilot's spelling — `${selection}`, `${file}`,
+`${fileBasename}`, `${fileDirname}`, `${workspaceFolder}`, and `${input:name}` or
+`${input:name:default}` for whatever is typed after the command.
+
+**Fix any problem with Alt+Enter.** Every error and warning the IDE shows — from
+its own inspections or any other plugin — gets **Fix with LLM Copilot** and
+**Explain with LLM Copilot** in its <kbd>Alt</kbd>+<kbd>Enter</kbd> menu. Fixing
+rewrites the lines around the problem, with the real declarations of the names
+involved taken from the project index, as one undoable edit; explaining answers
+in the chat window.
+
+**Code review.** **LLM Copilot: Review Selection** (editor menu) reviews the
+selection or, with nothing selected, the whole file; **Tools → LLM Copilot:
+Review Uncommitted Changes** reviews every staged and unstaged change. Comments
+come back as a list — severity, file, line and what to do — and choosing one
+jumps to the line.
+
+**Commits and pull requests.** **Generate Commit Message** sits on the commit
+message toolbar and writes straight into the commit box. **Tools → LLM Copilot:
+Generate Pull Request Description** reads the commits and diff between the
+current branch and its base (`origin/HEAD`, else `main` or `master`) and opens a
+title, summary and testing notes as a Markdown file, copied to the clipboard.
+
+**Terminal commands.** **Tools → LLM Copilot: Suggest Terminal Command** turns a
+description — *"kill whatever is listening on port 8080"* — into one command for
+your shell and operating system, with a line explaining it, ready to copy into
+the terminal.
+
 ---
 
 ## Requirements
@@ -231,6 +288,7 @@ model name and API key, and use **LLM Copilot: Test Connection** to confirm.
 | Auto-trigger | `true` | Off means completions only on the shortcut. |
 | Infer intent | `true` | Read what the code is working towards and tell the model what the next statement most likely does. |
 | Show status bar | `true` | Status widget in the bottom bar. |
+| Follow the repository's instruction files in chat | `true` | Read `.github/copilot-instructions.md`, `AGENTS.md` and `.github/instructions/*.instructions.md` into every chat request. |
 | Test framework | *(blank)* | Blank lets the model pick per language. |
 | Offer solutions for errors | `true` | Watch run, debug and terminal output for failures. |
 | Notify as soon as something fails | `true` | Off means the pane is reached from the menu or <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>E</kbd>. |
@@ -280,7 +338,9 @@ collide with your setup.
 on screen; otherwise they fall through to their normal behaviour.
 
 Fix Code, Generate Constructor, Generate Getters & Setters, Implement Interface,
-Toggle Enable/Disable, and Test Connection have no default shortcut. Reach them
+Review Selection, Review Uncommitted Changes, Generate Pull Request Description,
+Suggest Terminal Command, Toggle Enable/Disable, and Test Connection have no
+default shortcut. Reach them
 from the editor context menu under **LLM Copilot**, or bind them yourself.
 
 ### Errors from the console, the debugger and the terminal
@@ -442,7 +502,7 @@ first use, cached afterwards. This is how CI builds.
 ./gradlew test
 ```
 
-294 unit tests cover the logic that does not need a running IDE:
+337 unit tests cover the logic that does not need a running IDE:
 
 | Suite | What it pins down |
 |---|---|
@@ -458,6 +518,13 @@ first use, cached afterwards. This is how CI builds.
 | `SuggestionGateTest` | Every reason ghost text refuses to appear — code after the caret, deletions, strings, comments, dismissals, short identifiers, selections — plus the line budget per shape and the balanced-cut trimming. |
 | `GhostTextPacingTest` | Dismissal memory and its release conditions, forward-typing detection, the latency-led debounce across fast, slow and middling models, and typing through a suggestion. |
 | `SourceSummaryTest` | Declaration and import extraction for Java, Kotlin, TypeScript, Python, Rust and Go, plus the import window and minified-line limits. |
+| `ProjectSearchTest` | Ranking files for `#codebase` by exact names, path segments and partial matches, and the rendered result. |
+| `ChatReferencesTest` | Slash commands, `#file` paths quoted and bare, the named references, attachment rendering and search-term splitting. |
+| `CustomInstructionsTest` | Front matter, `applyTo` globs, ordering of scoped and unconditional instructions, folding into the system message, and loading from a repository. |
+| `PromptFilesTest` | Command names and descriptions, Copilot-style variables and input defaults, and loading `.github/prompts`. |
+| `StreamDecoderTest` | Lines split across chunks, SSE and NDJSON framing, and OpenAI, Anthropic and Ollama deltas, stop events and mid-stream errors. |
+| `CodeReviewTest` | Line numbering, diffs rewritten with new-file line numbers, and reading findings back in their common variations. |
+| `AssistPromptsTest` | The problem-fix window, code-block extraction, terminal suggestions and pull request prompts. |
 
 Editor-dependent code is tested through `FakeEditor`, a helper that stubs the few
 `Editor` and `Document` methods the production code touches, so the suite runs in
@@ -474,9 +541,11 @@ src/main/java/com/llmcopilot/
 ├── completion/   ghost text, the suggestion gate and its pacing, doc comments,
 │                 structure analysis, key handling
 ├── index/        the whole-project symbol table and import graph
-├── chat/         tool window, editor context capture, code proposals
+├── chat/         tool window, editor context capture, code proposals,
+│                 # references, repository instructions and prompt files
 ├── errors/       error capture, trace parsing, deep context, the solutions pane
-├── services/     LLMClient (all provider HTTP), PromptBuilder
+├── review/       code review prompts and reading findings back
+├── services/     LLMClient (all provider HTTP, streaming), PromptBuilder, AssistPrompts
 ├── settings/     persisted state and the settings UI
 ├── actions/      registered IDE actions
 └── ui/           status bar widget

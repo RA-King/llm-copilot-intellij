@@ -15,7 +15,7 @@ public class LLMCopilotConfigurable implements Configurable {
     private JBTextField  fldApiKey;   // plain text field — JBPasswordField has no int constructor
     private JBCheckBox   chkEnabled, chkAutoTrigger, chkStatusBar, chkPsiContext, chkIntentInference;
     private JBCheckBox   chkErrorAssist, chkErrorAutoOffer, chkErrorDeepContext;
-    private JBCheckBox   chkAdaptiveDebounce, chkProjectIndex;
+    private JBCheckBox   chkAdaptiveDebounce, chkProjectIndex, chkCustomInstructions;
     private JSpinner     spnMaxTokens, spnTemperature, spnDebounce, spnErrorSolutions, spnErrorContext;
     private JSpinner     spnMinDebounce, spnStatementLines, spnBlockLines, spnMinIdentifier;
     private JSpinner     spnIndexMaxFiles, spnIndexMaxFileKb, spnProjectChars;
@@ -45,6 +45,10 @@ public class LLMCopilotConfigurable implements Configurable {
             "<html>Reads the job in the enclosing declaration's name, the parameters and locals "
           + "nothing has used yet, the block the caret sits in and an unsatisfied return type, "
           + "then tells the model what the next statement most likely does.</html>");
+        chkCustomInstructions = new JBCheckBox("Follow the repository's instruction files in chat");
+        chkCustomInstructions.setToolTipText(
+            "<html>.github/copilot-instructions.md and AGENTS.md always; .github/instructions/*.instructions.md "
+          + "for files matching their applyTo globs. Prompt files in .github/prompts become chat slash commands.</html>");
         chkPsiContext    = new JBCheckBox("Use IDE code analysis for completion context");
         chkPsiContext.setToolTipText(
             "Resolve the enclosing signature and referenced declarations through the language's "
@@ -109,6 +113,7 @@ public class LLMCopilotConfigurable implements Configurable {
             .addComponent(chkPsiContext)
             .addComponent(chkIntentInference)
             .addComponent(chkStatusBar)
+            .addComponent(chkCustomInstructions)
             .addSeparator()
             .addComponent(new JBLabel("<html><b>Ghost text</b></html>"))
             .addComponent(chkAdaptiveDebounce)
@@ -166,6 +171,7 @@ public class LLMCopilotConfigurable implements Configurable {
             || st.maxBlockLines        != (int) spnBlockLines.getValue()
             || st.minIdentifierChars   != (int) spnMinIdentifier.getValue()
             || st.projectIndexEnabled  != chkProjectIndex.isSelected()
+            || st.customInstructions   != chkCustomInstructions.isSelected()
             || st.projectIndexMaxFiles != (int) spnIndexMaxFiles.getValue()
             || st.projectIndexMaxFileKb != (int) spnIndexMaxFileKb.getValue()
             || st.projectCompletionChars != (int) spnProjectChars.getValue()
@@ -200,6 +206,7 @@ public class LLMCopilotConfigurable implements Configurable {
         st.maxBlockLines        = (int) spnBlockLines.getValue();
         st.minIdentifierChars   = (int) spnMinIdentifier.getValue();
         st.projectIndexEnabled  = chkProjectIndex.isSelected();
+        st.customInstructions   = chkCustomInstructions.isSelected();
         st.projectIndexMaxFiles = (int) spnIndexMaxFiles.getValue();
         st.projectIndexMaxFileKb = (int) spnIndexMaxFileKb.getValue();
         st.projectCompletionChars = (int) spnProjectChars.getValue();
@@ -234,6 +241,7 @@ public class LLMCopilotConfigurable implements Configurable {
         spnBlockLines.setValue(st.maxBlockLines);
         spnMinIdentifier.setValue(st.minIdentifierChars);
         chkProjectIndex.setSelected(st.projectIndexEnabled);
+        chkCustomInstructions.setSelected(st.customInstructions);
         spnIndexMaxFiles.setValue(st.projectIndexMaxFiles);
         spnIndexMaxFileKb.setValue(st.projectIndexMaxFileKb);
         spnProjectChars.setValue(st.projectCompletionChars);

@@ -465,6 +465,11 @@ public final class ProjectIndexService {
         return String.join("\n\n", sections);
     }
 
+    /** The declarations a question is about, rendered for a prompt. See {@link ProjectSearch}. */
+    public String renderSearch(List<String> terms, int budgetChars) {
+        return ProjectSearch.render(files.values(), terms, budgetChars);
+    }
+
     /** Orientation rather than detail — what kind of project this is. */
     public String renderDigest() {
         if (files.isEmpty()) return "";

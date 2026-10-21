@@ -80,6 +80,146 @@ public class LLMClient {
         };
     }
 
+    // ── Streaming chat ────────────────────────────────────────────────────────
+
+    /** Room for a full chat answer, rather than the ghost-text ceiling in the settings. */
+    public static final int CHAT_MAX_TOKENS = 2048;
+
+    private record StreamTarget(String url, String body, Map<String,String> headers,
+                                StreamDecoder.Framing framing, StreamDecoder.Dialect dialect) {}
+
+    /**
+     * Chat with the reply delivered as it is written. Returns the whole reply;
+     * once {@code cancelled} turns true the connection is dropped and what has
+     * arrived so far is returned rather than discarded. Providers without a
+     * usable stream answer in one piece through {@code onDelta}.
+     */
+    public static String chatStream(List<ChatMessage> messages, java.util.function.Consumer<String> onDelta,
+                                    java.util.function.BooleanSupplier cancelled) throws Exception {
+        LLMCopilotSettings s = LLMCopilotSettings.getInstance();
+        StreamTarget target = streamTarget(messages, s);
+        if (target == null) {
+            String reply = chat(messages, CHAT_MAX_TOKENS);
+            if (!cancelled.getAsBoolean()) onDelta.accept(reply);
+            return reply;
+        }
+
+        HttpURLConnection conn = (HttpURLConnection) new URI(target.url()).toURL().openConnection();
+        conn.setRequestMethod("POST");
+        conn.setDoOutput(true);
+        conn.setConnectTimeout(5_000);
+        conn.setReadTimeout(60_000);
+        conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+        conn.setRequestProperty("Accept", "text/event-stream");
+        for (Map.Entry<String,String> e : target.headers().entrySet()) conn.setRequestProperty(e.getKey(), e.getValue());
+        try (OutputStream os = conn.getOutputStream()) {
+            os.write(target.body().getBytes(StandardCharsets.UTF_8));
+        }
+
+        int code = conn.getResponseCode();
+        if (code >= 400) {
+            InputStream err = conn.getErrorStream();
+            throw new Exception("HTTP " + code + ": " + (err == null ? "" : new String(err.readAllBytes(), StandardCharsets.UTF_8)));
+        }
+
+        StreamDecoder decoder = new StreamDecoder(target.framing());
+        StringBuilder full = new StringBuilder();
+        try (Reader reader = new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8)) {
+            char[] buffer = new char[2048];
+            int n;
+            while (!cancelled.getAsBoolean() && (n = reader.read(buffer)) >= 0) {
+                if (!take(decoder.push(new String(buffer, 0, n)), target.dialect(), full, onDelta, cancelled)) break;
+            }
+            if (!cancelled.getAsBoolean()) take(decoder.flush(), target.dialect(), full, onDelta, cancelled);
+        } finally {
+            conn.disconnect();
+        }
+        return full.toString();
+    }
+
+    /** False once the stream has said it is finished. */
+    private static boolean take(List<String> payloads, StreamDecoder.Dialect dialect, StringBuilder full,
+                                java.util.function.Consumer<String> onDelta,
+                                java.util.function.BooleanSupplier cancelled) throws Exception {
+        for (String payload : payloads) {
+            StreamDecoder.Delta delta = StreamDecoder.read(payload, dialect);
+            if (delta.error() != null) throw new Exception(delta.error());
+            if (!delta.text().isEmpty() && !cancelled.getAsBoolean()) {
+                full.append(delta.text());
+                onDelta.accept(delta.text());
+            }
+            if (delta.done()) return false;
+        }
+        return true;
+    }
+
+    private static StreamTarget streamTarget(List<ChatMessage> messages, LLMCopilotSettings s) {
+        Map<String,String> bearer = s.getApiKey().isEmpty() ? Map.of() : Map.of("Authorization", "Bearer " + s.getApiKey());
+        StreamDecoder.Framing sse = StreamDecoder.Framing.SSE;
+        StreamDecoder.Dialect openai = StreamDecoder.Dialect.OPENAI;
+
+        switch (s.getProvider()) {
+            case "ollama": {
+                JsonObject body = GSON.fromJson(buildOpenAIBody(messages, CHAT_MAX_TOKENS, s.getModel(), 0), JsonObject.class);
+                body.remove("max_tokens");
+                body.addProperty("stream", true);
+                JsonObject opts = new JsonObject();
+                opts.addProperty("temperature", s.getTemperature());
+                body.add("options", opts);
+                return new StreamTarget(s.getBaseUrl().replaceAll("/$", "") + "/api/chat", GSON.toJson(body),
+                    Map.of(), StreamDecoder.Framing.NDJSON, StreamDecoder.Dialect.OLLAMA);
+            }
+            case "anthropic":
+                return new StreamTarget("https://api.anthropic.com/v1/messages",
+                    streaming(buildAnthropicBody(messages, CHAT_MAX_TOKENS, s.getModel(), s.getTemperature())),
+                    Map.of("x-api-key", s.getApiKey(), "anthropic-version", "2023-06-01"),
+                    sse, StreamDecoder.Dialect.ANTHROPIC);
+            case "mistral":
+                return openaiTarget("https://api.mistral.ai/v1/chat/completions", messages, s, "mistral-large-latest", bearer);
+            case "gemini":
+                return openaiTarget("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                    messages, s, "gemini-2.5-flash", bearer);
+            case "deepseek":
+                return openaiTarget("https://api.deepseek.com/v1/chat/completions", messages, s, "deepseek-chat", bearer);
+            case "grok":
+                return openaiTarget("https://api.x.ai/v1/chat/completions", messages, s, "grok-3-mini", bearer);
+            case "azure": {
+                JsonObject body = GSON.fromJson(buildOpenAIBody(messages, CHAT_MAX_TOKENS, "", s.getTemperature()), JsonObject.class);
+                body.remove("model");
+                body.addProperty("stream", true);
+                return new StreamTarget(s.getBaseUrl().replaceAll("/$", "") + "/chat/completions?api-version=2024-12-01-preview",
+                    GSON.toJson(body), Map.of("api-key", s.getApiKey()), sse, openai);
+            }
+            case "claudecode":
+                // The community proxies differ too much in what they stream to rely on it.
+                return null;
+            default: {
+                String base = switch (s.getProvider()) {
+                    case "openai"     -> "https://api.openai.com";
+                    case "groq"       -> "https://api.groq.com/openai";
+                    case "openrouter" -> "https://openrouter.ai/api";
+                    default           -> s.getBaseUrl().replaceAll("/$","");
+                };
+                Map<String,String> hdrs = new HashMap<>(bearer);
+                if ("openrouter".equals(s.getProvider())) hdrs.put("X-Title", "LLM Copilot IntelliJ");
+                return openaiTarget(base + "/v1/chat/completions", messages, s, s.getModel(), hdrs);
+            }
+        }
+    }
+
+    private static StreamTarget openaiTarget(String url, List<ChatMessage> messages, LLMCopilotSettings s,
+                                             String fallbackModel, Map<String,String> headers) {
+        String model = s.getModel().isEmpty() ? fallbackModel : s.getModel();
+        return new StreamTarget(url, streaming(buildOpenAIBody(messages, CHAT_MAX_TOKENS, model, s.getTemperature())),
+            headers, StreamDecoder.Framing.SSE, StreamDecoder.Dialect.OPENAI);
+    }
+
+    private static String streaming(String body) {
+        JsonObject json = GSON.fromJson(body, JsonObject.class);
+        json.addProperty("stream", true);
+        return GSON.toJson(json);
+    }
+
     public static String testConnection() {
         LLMCopilotSettings s = LLMCopilotSettings.getInstance();
         try {

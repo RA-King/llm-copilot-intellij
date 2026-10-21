@@ -122,6 +122,16 @@
         <postStartupActivity
             implementation="com.llmcopilot.index.ProjectIndexStartup"/>
 
+        <!-- Alt+Enter on any error or warning: fix it, or have it explained in chat. -->
+        <intentionAction>
+            <className>com.llmcopilot.actions.FixProblemIntention</className>
+            <category>LLM Copilot</category>
+        </intentionAction>
+        <intentionAction>
+            <className>com.llmcopilot.actions.ExplainProblemIntention</className>
+            <category>LLM Copilot</category>
+        </intentionAction>
+
     </extensions>
 
     <projectListeners>
@@ -247,6 +257,37 @@
                 text="LLM Copilot: Generate Commit Message"
                 description="Generate a commit message from the current diff">
             <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift M"/>
+            <add-to-group group-id="Vcs.MessageActionGroup" anchor="first"/>
+        </action>
+
+        <!-- Review the selection, or the whole file -->
+        <action id="LLMCopilot.ReviewSelection"
+                class="com.llmcopilot.actions.ReviewSelectionAction"
+                text="LLM Copilot: Review Selection"
+                description="Review the selected code, or the whole file, and list what is worth fixing"/>
+
+        <!-- Review what has not been committed -->
+        <action id="LLMCopilot.ReviewChanges"
+                class="com.llmcopilot.actions.ReviewChangesAction"
+                text="LLM Copilot: Review Uncommitted Changes"
+                description="Review every uncommitted change in the repository">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+
+        <!-- Pull request description from the branch -->
+        <action id="LLMCopilot.GeneratePullRequestDescription"
+                class="com.llmcopilot.actions.GeneratePullRequestDescriptionAction"
+                text="LLM Copilot: Generate Pull Request Description"
+                description="Write a title and description for this branch's changes against its base">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+
+        <!-- A shell command from a description -->
+        <action id="LLMCopilot.SuggestTerminalCommand"
+                class="com.llmcopilot.actions.SuggestTerminalCommandAction"
+                text="LLM Copilot: Suggest Terminal Command"
+                description="Describe what you want done and get the shell command for it">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
 
         <!-- Toggle enabled -->
@@ -288,6 +329,7 @@
             <reference ref="LLMCopilot.GenerateGettersSetters"/>
             <reference ref="LLMCopilot.ImplementInterface"/>
             <reference ref="LLMCopilot.GenerateTests"/>
+            <reference ref="LLMCopilot.ReviewSelection"/>
             <separator/>
             <reference ref="LLMCopilot.ExplainError"/>
             <reference ref="LLMCopilot.InlineChat"/>
