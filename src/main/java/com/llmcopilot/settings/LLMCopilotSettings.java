@@ -53,6 +53,10 @@ public class LLMCopilotSettings implements PersistentStateComponent<LLMCopilotSe
         public int     maxBlockLines      = 12;
         /** How much of an identifier must be typed before a suggestion is worth it. */
         public int     minIdentifierChars = 2;
+        /** Predict the edit that follows from the last ones, anywhere in the file. */
+        public boolean nextEditEnabled    = true;
+        /** Wait after the last edit before predicting the next one. */
+        public int     nextEditDebounceMs = 800;
 
         // ── Project index ────────────────────────────────────────────────────
         /** Read the whole project's declarations and imports so answers can use them. */
@@ -117,6 +121,9 @@ public class LLMCopilotSettings implements PersistentStateComponent<LLMCopilotSe
     public int     getMaxStatementLines()   { return myState.maxStatementLines; }
     public int     getMaxBlockLines()       { return myState.maxBlockLines; }
     public int     getMinIdentifierChars()  { return myState.minIdentifierChars; }
+    public boolean isNextEditEnabled()      { return myState.nextEditEnabled; }
+    public void    setNextEditEnabled(boolean v) { myState.nextEditEnabled = v; }
+    public int     getNextEditDebounceMs()  { return myState.nextEditDebounceMs; }
 
     public boolean isProjectIndexEnabled()  { return myState.projectIndexEnabled; }
     public void    setProjectIndexEnabled(boolean v) { myState.projectIndexEnabled = v; }

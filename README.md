@@ -94,6 +94,18 @@ stripped, whole blocks that already exist above or below the caret are rejected,
 and individual repeated lines are dropped. If more than half the suggestion is
 material you already have, nothing is shown.
 
+**Next edit suggestions.** Ghost text continues what you are typing; a next edit
+suggestion follows from what you just changed. After an edit and a pause, the
+recent edits and the code around the caret are sent off, and the edit they make
+necessary is drawn where it belongs, which may be anywhere in the file: the other
+uses of a variable you renamed, the call site of a method that just gained a
+parameter. The text to be replaced is struck through and the new text sits beside
+it. <kbd>Tab</kbd> jumps to a suggestion away from the caret and applies it once
+there; <kbd>Esc</kbd> dismisses it. Applying one is itself an edit, so a rename walks
+through the file one <kbd>Tab</kbd> at a time. Undo and redo never trigger a
+prediction, a suggestion that would undo your last edit is discarded, and ghost
+text keeps the first claim on <kbd>Tab</kbd>.
+
 **Doc comments on demand.** Type `//` or `/**` on a line of its own directly above
 a declaration and the plugin drafts a documentation comment for it. The result is
 shown in a preview dialog — nothing is written to your file until you click
@@ -300,6 +312,8 @@ model name and API key, and use **LLM Copilot: Test Connection** to confirm.
 | Max statement lines | `3` | Most lines a statement-sized suggestion may occupy. |
 | Max block lines | `12` | Most lines a block-sized suggestion may occupy. |
 | Min identifier chars | `2` | How much of an identifier must be typed before ghost text is offered. |
+| Suggest the next edit anywhere in the file | `true` | Predict the edit that follows from your last ones. One request per pause after an edit. |
+| Next edit wait | `800` ms | Pause after the last edit before predicting the next one. |
 | Index the whole project | `true` | Read every declaration and import in the project so answers can use the real signatures. |
 | Max files | `4000` | Ceiling on what the index holds. |
 | Max file size | `256` KB | Larger files are skipped — generated bundles teach the model nothing. |
@@ -333,6 +347,7 @@ collide with your setup.
 | Generate unit tests | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> |
 | Generate commit message | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> |
 | Explain the error in the console or terminal | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>E</kbd> |
+| Jump to / apply a next edit suggestion | <kbd>Tab</kbd> (while one is showing) |
 
 <kbd>Tab</kbd> and <kbd>Esc</kbd> only belong to the plugin while a suggestion is
 on screen; otherwise they fall through to their normal behaviour.
@@ -502,7 +517,7 @@ first use, cached afterwards. This is how CI builds.
 ./gradlew test
 ```
 
-337 unit tests cover the logic that does not need a running IDE:
+355 unit tests cover the logic that does not need a running IDE:
 
 | Suite | What it pins down |
 |---|---|
@@ -516,6 +531,8 @@ first use, cached afterwards. This is how CI builds.
 | `ErrorParserTest` | Colour-code stripping, failure detection, capture trimming, and stack-trace reading for Node, Python, Java, .NET, Go, Rust, Ruby, compilers and build tools. |
 | `ErrorSolutionsTest` | Numbered lists, bullets and bolded headings, over-long titles, code fences, the item limit, and the `[file:line] (confidence)` each fix carries. |
 | `SuggestionGateTest` | Every reason ghost text refuses to appear — code after the caret, deletions, strings, comments, dismissals, short identifiers, selections — plus the line budget per shape and the balanced-cut trimming. |
+| `EditHistoryTest` | Recording edits as whole lines, merging keystrokes and adjacent lines, forgetting edits typed and deleted again, keeping older edits on the right lines, and rendering. |
+| `NextEditTest` | The prediction prompt, reading search/replace blocks and NONE, placing the edit nearest the caret, rejecting a suggestion that reverts the last edit, and narrowing the edit for display. |
 | `GhostTextPacingTest` | Dismissal memory and its release conditions, forward-typing detection, the latency-led debounce across fast, slow and middling models, and typing through a suggestion. |
 | `SourceSummaryTest` | Declaration and import extraction for Java, Kotlin, TypeScript, Python, Rust and Go, plus the import window and minified-line limits. |
 | `ProjectSearchTest` | Ranking files for `#codebase` by exact names, path segments and partial matches, and the rendered result. |

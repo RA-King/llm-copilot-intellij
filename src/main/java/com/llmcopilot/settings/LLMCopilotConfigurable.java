@@ -15,9 +15,9 @@ public class LLMCopilotConfigurable implements Configurable {
     private JBTextField  fldApiKey;   // plain text field — JBPasswordField has no int constructor
     private JBCheckBox   chkEnabled, chkAutoTrigger, chkStatusBar, chkPsiContext, chkIntentInference;
     private JBCheckBox   chkErrorAssist, chkErrorAutoOffer, chkErrorDeepContext;
-    private JBCheckBox   chkAdaptiveDebounce, chkProjectIndex, chkCustomInstructions;
+    private JBCheckBox   chkAdaptiveDebounce, chkProjectIndex, chkCustomInstructions, chkNextEdit;
     private JSpinner     spnMaxTokens, spnTemperature, spnDebounce, spnErrorSolutions, spnErrorContext;
-    private JSpinner     spnMinDebounce, spnStatementLines, spnBlockLines, spnMinIdentifier;
+    private JSpinner     spnMinDebounce, spnStatementLines, spnBlockLines, spnMinIdentifier, spnNextEditDebounce;
     private JSpinner     spnIndexMaxFiles, spnIndexMaxFileKb, spnProjectChars;
     private ComboBox<String> cmbProvider;
 
@@ -78,6 +78,12 @@ public class LLMCopilotConfigurable implements Configurable {
         spnStatementLines = new JSpinner(new SpinnerNumberModel(3, 1, 40, 1));
         spnBlockLines     = new JSpinner(new SpinnerNumberModel(12, 1, 80, 1));
         spnMinIdentifier  = new JSpinner(new SpinnerNumberModel(2, 0, 8, 1));
+        chkNextEdit = new JBCheckBox("Suggest the next edit anywhere in the file");
+        chkNextEdit.setToolTipText(
+            "<html>After an edit and a pause, predict the edit that follows from it — the other uses of "
+          + "something renamed, a call site of a changed signature — and show it in place. Tab jumps to it, "
+          + "Tab again applies it, Escape dismisses it. Each pause after an edit costs one request.</html>");
+        spnNextEditDebounce = new JSpinner(new SpinnerNumberModel(800, 200, 5000, 100));
 
         chkProjectIndex   = new JBCheckBox("Index the whole project");
         chkProjectIndex.setToolTipText(
@@ -121,6 +127,8 @@ public class LLMCopilotConfigurable implements Configurable {
             .addLabeledComponent("Max statement lines:",  spnStatementLines)
             .addLabeledComponent("Max block lines:",      spnBlockLines)
             .addLabeledComponent("Min identifier chars:", spnMinIdentifier)
+            .addComponent(chkNextEdit)
+            .addLabeledComponent("Next edit wait (ms):",  spnNextEditDebounce)
             .addSeparator()
             .addComponent(new JBLabel("<html><b>Project index</b></html>"))
             .addComponent(chkProjectIndex)
@@ -170,6 +178,8 @@ public class LLMCopilotConfigurable implements Configurable {
             || st.maxStatementLines    != (int) spnStatementLines.getValue()
             || st.maxBlockLines        != (int) spnBlockLines.getValue()
             || st.minIdentifierChars   != (int) spnMinIdentifier.getValue()
+            || st.nextEditEnabled      != chkNextEdit.isSelected()
+            || st.nextEditDebounceMs   != (int) spnNextEditDebounce.getValue()
             || st.projectIndexEnabled  != chkProjectIndex.isSelected()
             || st.customInstructions   != chkCustomInstructions.isSelected()
             || st.projectIndexMaxFiles != (int) spnIndexMaxFiles.getValue()
@@ -205,6 +215,8 @@ public class LLMCopilotConfigurable implements Configurable {
         st.maxStatementLines    = (int) spnStatementLines.getValue();
         st.maxBlockLines        = (int) spnBlockLines.getValue();
         st.minIdentifierChars   = (int) spnMinIdentifier.getValue();
+        st.nextEditEnabled      = chkNextEdit.isSelected();
+        st.nextEditDebounceMs   = (int) spnNextEditDebounce.getValue();
         st.projectIndexEnabled  = chkProjectIndex.isSelected();
         st.customInstructions   = chkCustomInstructions.isSelected();
         st.projectIndexMaxFiles = (int) spnIndexMaxFiles.getValue();
@@ -240,6 +252,8 @@ public class LLMCopilotConfigurable implements Configurable {
         spnStatementLines.setValue(st.maxStatementLines);
         spnBlockLines.setValue(st.maxBlockLines);
         spnMinIdentifier.setValue(st.minIdentifierChars);
+        chkNextEdit.setSelected(st.nextEditEnabled);
+        spnNextEditDebounce.setValue(st.nextEditDebounceMs);
         chkProjectIndex.setSelected(st.projectIndexEnabled);
         chkCustomInstructions.setSelected(st.customInstructions);
         spnIndexMaxFiles.setValue(st.projectIndexMaxFiles);
