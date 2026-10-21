@@ -1,11 +1,24 @@
 package com.llmcopilot.chat;
 
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.ReadAction;
+import com.intellij.openapi.editor.Editor;
+import com.intellij.openapi.fileEditor.FileDocumentManager;
+import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.vfs.LocalFileSystem;
+import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.psi.search.FilenameIndex;
+import com.intellij.psi.search.GlobalSearchScope;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.util.ui.JBUI;
+import com.llmcopilot.actions.ProblemsAtCaret;
+import com.llmcopilot.errors.CapturedError;
+import com.llmcopilot.errors.ErrorCaptureService;
+import com.llmcopilot.index.ProjectIndexService;
 import com.llmcopilot.services.LLMClient;
 import com.llmcopilot.services.PromptBuilder;
+import com.llmcopilot.util.Git;
 
 import javax.swing.*;
 import javax.swing.text.*;
@@ -14,18 +27,22 @@ import java.awt.event.*;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Full AI Chat panel — Junie AI Assistant level.
  *
  * Features:
  *  - Context bar: shows active file + selection info at all times
- *  - Slash commands: /fix /explain /refactor /test /doc /commit /help
+ *  - Slash commands: /fix /explain /refactor /test /doc /commit /help, plus the
+ *    repository's own .github/prompts/*.prompt.md files
+ *  - # references: #file:path #selection #codebase #problems #changes #terminalLastCommand
+ *  - Repository instructions (.github/copilot-instructions.md and friends) in every request
  *  - Automatic selection context included in every message
  *  - Code proposals shown with Accept / Discard / Copy buttons
  *  - Accept replaces selection or inserts at caret in the active editor
  *  - Full conversation history with multi-turn context
- *  - Streaming-style status updates
+ *  - Replies stream in as they are written, and can be stopped
  */
 public class LLMChatPanel extends JPanel {
 
@@ -40,6 +57,12 @@ public class LLMChatPanel extends JPanel {
 
     private final List<LLMClient.ChatMessage> history = new ArrayList<>();
     private boolean includeContext = true;   // toggled by context button
+    private final AtomicBoolean cancelled = new AtomicBoolean(false);
+    private volatile boolean running = false;
+    private List<PromptFiles.PromptFile> promptFiles = List.of();
+
+    /** Characters of any one attachment sent with a message. */
+    private static final int ATTACHMENT_BUDGET = 24_000;
 
     private static final ExecutorService BG = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(r, "llm-chat-bg"); t.setDaemon(true); return t;
@@ -105,7 +128,7 @@ public class LLMChatPanel extends JPanel {
         appendSystemMessage("LLM Copilot ready. Type a message or use:\n" +
             "/fix — fix bugs\n/explain — explain code\n/refactor <instruction> — refactor\n" +
             "/test — generate tests\n/doc — generate doc comment\n/commit — commit message\n" +
-            "/help — show commands");
+            "/help — commands, prompt files and # references");
 
         // ── Input area ────────────────────────────────────────────────────────
         inputArea = new JTextArea(3, 50);
@@ -118,7 +141,8 @@ public class LLMChatPanel extends JPanel {
         inputArea.addKeyListener(new KeyAdapter() {
             @Override public void keyPressed(KeyEvent e) {
                 if (e.getKeyCode() == KeyEvent.VK_ENTER && !e.isShiftDown()) {
-                    e.consume(); send();
+                    e.consume();
+                    if (!running) send();
                 }
             }
         });
@@ -129,7 +153,7 @@ public class LLMChatPanel extends JPanel {
         sendBtn.setForeground(Color.WHITE);
         sendBtn.setFocusPainted(false);
         sendBtn.setFont(sendBtn.getFont().deriveFont(Font.BOLD));
-        sendBtn.addActionListener(e -> send());
+        sendBtn.addActionListener(e -> { if (running) cancelled.set(true); else send(); });
         clearBtn.addActionListener(e -> clearAll());
 
         JPanel btnRow = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
@@ -181,37 +205,7 @@ public class LLMChatPanel extends JPanel {
      */
     public void ask(String display, List<LLMClient.ChatMessage> messages) {
         appendUserBubble(display);
-
-        LLMClient.ChatMessage question = null;
-        for (LLMClient.ChatMessage message : messages) {
-            if ("user".equals(message.role())) question = message;
-        }
-        history.add(new LLMClient.ChatMessage("user", question != null ? question.content() : display));
-
-        EditorContextProvider.EditorContext ctx = EditorContextProvider.getActive(project);
-        JLabel thinking = appendThinkingBubble();
-        sendBtn.setEnabled(false);
-
-        BG.submit(() -> {
-            try {
-                String resp = LLMClient.chat(messages);
-                if (resp == null || resp.isBlank()) resp = "(No response — check provider settings)";
-                history.add(new LLMClient.ChatMessage("assistant", resp));
-                final String finalResp = resp;
-                ApplicationManager.getApplication().invokeLater(() -> {
-                    removeThinkingBubble(thinking);
-                    appendAssistantMessage(finalResp, ctx);
-                    sendBtn.setEnabled(true);
-                });
-            } catch (Exception ex) {
-                final String err = "Error: " + (ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName());
-                ApplicationManager.getApplication().invokeLater(() -> {
-                    removeThinkingBubble(thinking);
-                    appendErrorBubble(err);
-                    sendBtn.setEnabled(true);
-                });
-            }
-        });
+        streamReply(() -> messages, EditorContextProvider.getActive(project), true);
     }
 
     // ── Context bar ───────────────────────────────────────────────────────────
@@ -238,138 +232,345 @@ public class LLMChatPanel extends JPanel {
 
     private void send() {
         String raw = inputArea.getText().trim();
-        if (raw.isEmpty()) return;
+        if (raw.isEmpty() || running) return;
         inputArea.setText("");
-        sendBtn.setEnabled(false);
 
         // Capture editor context at send time
         EditorContextProvider.EditorContext ctx = includeContext
             ? EditorContextProvider.getActive(project)
             : EditorContextProvider.EditorContext.EMPTY;
 
+        ChatReferences.Parsed parsed = ChatReferences.parse(raw);
+
         // ── Slash command dispatch ─────────────────────────────────────────────
-        if (raw.startsWith("/")) {
-            handleSlashCommand(raw, ctx);
-            return;
+        String question = parsed.text();
+        if (parsed.command() != null) {
+            question = handleSlashCommand(raw, parsed, ctx);
+            if (question == null) return;
         }
 
         // ── Normal chat with context ───────────────────────────────────────────
         String userDisplay = raw;
-        String userForLLM;
+        String contextBlock;
 
         if (ctx.hasSelection) {
             userDisplay = raw + "\n\n[Context: " + ctx.fileName + " · " + countLines(ctx.selectedText) + " lines selected]";
-            userForLLM  = raw + "\n\nSelected code in " + ctx.fileName + " (" + ctx.language + "):\n```" +
+            contextBlock = "Selected code in " + ctx.fileName + " (" + ctx.language + "):\n```" +
                 ctx.language + "\n" + ctx.selectedText + "\n```";
         } else if (!ctx.surroundingContext.isEmpty()) {
-            userForLLM = raw + "\n\nFile: " + ctx.fileName + " (" + ctx.language + ")\nContext:\n```" +
+            contextBlock = "File: " + ctx.fileName + " (" + ctx.language + ")\nContext:\n```" +
                 ctx.language + "\n" + ctx.surroundingContext + "\n```";
         } else {
-            userForLLM = raw;
+            contextBlock = "";
         }
 
         appendUserBubble(userDisplay);
-        final String forLLM = userForLLM;
+
+        // Whatever the references need from the editor is read now, on the EDT;
+        // the slow parts — files, git, the index — are read in the background.
+        List<ChatReferences.Reference> refs = parsed.references();
+        Editor editor = FileEditorManager.getInstance(project).getSelectedTextEditor();
+        final String finalQuestion = question;
         final EditorContextProvider.EditorContext capturedCtx = ctx;
 
-        List<LLMClient.ChatMessage> msgs = buildMessages(forLLM);
-        history.add(new LLMClient.ChatMessage("user", forLLM));
+        streamReply(() -> {
+            List<ChatReferences.Attachment> attachments = resolve(refs, finalQuestion, capturedCtx, editor);
+            if (!attachments.isEmpty()) {
+                String used = String.join(" · ", attachments.stream().map(ChatReferences.Attachment::label).toList());
+                ApplicationManager.getApplication().invokeLater(() ->
+                    appendSystemMessage("Used " + attachments.size() + " reference" + (attachments.size() == 1 ? "" : "s") + ": " + used));
+            }
+            StringBuilder forLLM = new StringBuilder(finalQuestion);
+            if (!contextBlock.isEmpty()) forLLM.append("\n\n").append(contextBlock);
+            String rendered = ChatReferences.render(attachments);
+            if (!rendered.isEmpty()) forLLM.append("\n\n").append(rendered);
+            return buildMessages(forLLM.toString());
+        }, capturedCtx, true);
+    }
 
+    /**
+     * Runs a request and streams the reply into a bubble that grows as it is
+     * written; the finished reply is then re-rendered with its code proposals.
+     * {@code remember} records the question and the reply in the conversation.
+     */
+    private void streamReply(Callable<List<LLMClient.ChatMessage>> request,
+                             EditorContextProvider.EditorContext ctx, boolean remember) {
+        String relPath = activeRelativePath();
         JLabel thinking = appendThinkingBubble();
+        setRunning(true);
+
+        StringBuffer streamed = new StringBuffer();
+        AtomicBoolean updateQueued = new AtomicBoolean(false);
+        Component[] live = { null };
 
         BG.submit(() -> {
             try {
-                String resp = LLMClient.chat(msgs);
-                if (resp == null || resp.isBlank()) resp = "(No response — check provider settings)";
-                history.add(new LLMClient.ChatMessage("assistant", resp));
+                List<LLMClient.ChatMessage> msgs = CustomInstructions.withInstructions(request.call(),
+                    CustomInstructions.forFile(project.getBasePath(), relPath));
+                if (remember) history.add(msgs.get(msgs.size() - 1));
+
+                String resp = LLMClient.chatStream(msgs, delta -> {
+                    streamed.append(delta);
+                    if (updateQueued.compareAndSet(false, true)) {
+                        ApplicationManager.getApplication().invokeLater(() -> {
+                            updateQueued.set(false);
+                            if (!running) return;
+                            removeThinkingBubble(thinking);
+                            live[0] = replaceLive(live[0], streamed.toString());
+                        });
+                    }
+                }, cancelled::get);
+
+                boolean stopped = cancelled.get();
+                if (resp == null || resp.isBlank()) resp = stopped ? "" : "(No response — check provider settings)";
+                if (remember && !resp.isEmpty()) history.add(new LLMClient.ChatMessage("assistant", resp));
                 final String finalResp = resp;
                 ApplicationManager.getApplication().invokeLater(() -> {
+                    setRunning(false);
                     removeThinkingBubble(thinking);
-                    appendAssistantMessage(finalResp, capturedCtx);
-                    sendBtn.setEnabled(true);
+                    removeLive(live[0]);
+                    if (!finalResp.isEmpty()) appendAssistantMessage(finalResp, ctx);
+                    if (stopped) appendSystemMessage("Stopped.");
                 });
             } catch (Exception ex) {
                 final String err = "Error: " + (ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName());
                 ApplicationManager.getApplication().invokeLater(() -> {
+                    setRunning(false);
                     removeThinkingBubble(thinking);
+                    removeLive(live[0]);
                     appendErrorBubble(err);
-                    sendBtn.setEnabled(true);
                 });
             }
         });
     }
 
+    private void setRunning(boolean value) {
+        running = value;
+        if (value) cancelled.set(false);
+        sendBtn.setText(value ? "Stop ■" : "Send ↵");
+        sendBtn.setEnabled(true);
+    }
+
+    /** Swaps the streaming bubble for one holding the text so far, in the same place. */
+    private Component replaceLive(Component previous, String text) {
+        Component next = makeBubble(text, "ASSISTANT", COL_ASST_BG, COL_ASST_FG, FlowLayout.LEFT);
+        int at = previous == null ? -1 : indexOf(previous);
+        if (at < 0) {
+            addMessage(next);
+        } else {
+            messagesPanel.remove(at);
+            messagesPanel.add(next, at);
+            messagesPanel.revalidate();
+            JScrollBar sb = scrollPane.getVerticalScrollBar();
+            if (sb.getValue() + sb.getVisibleAmount() >= sb.getMaximum() - 60) {
+                SwingUtilities.invokeLater(() -> sb.setValue(sb.getMaximum()));
+            }
+        }
+        return next;
+    }
+
+    private void removeLive(Component live) {
+        int at = live == null ? -1 : indexOf(live);
+        if (at < 0) return;
+        messagesPanel.remove(at);
+        // and the spacer addMessage put after it
+        if (at < messagesPanel.getComponentCount()) messagesPanel.remove(at);
+        messagesPanel.revalidate();
+        messagesPanel.repaint();
+    }
+
+    private int indexOf(Component c) {
+        Component[] all = messagesPanel.getComponents();
+        for (int i = 0; i < all.length; i++) if (all[i] == c) return i;
+        return -1;
+    }
+
+    // ── References ────────────────────────────────────────────────────────────
+
+    private List<ChatReferences.Attachment> resolve(List<ChatReferences.Reference> refs, String question,
+                                                    EditorContextProvider.EditorContext ctx, Editor editor) {
+        List<ChatReferences.Attachment> out = new ArrayList<>();
+        for (ChatReferences.Reference ref : refs) {
+            try {
+                ChatReferences.Attachment a = resolveOne(ref, question, ctx, editor);
+                if (a == null) continue;
+                String content = a.content().length() > ATTACHMENT_BUDGET
+                    ? a.content().substring(0, ATTACHMENT_BUDGET) + "\n… (truncated)" : a.content();
+                out.add(new ChatReferences.Attachment(a.label(), a.language(), content));
+            } catch (Exception ex) {
+                String what = ref.kind().name().toLowerCase(Locale.ROOT) + (ref.arg() != null ? " " + ref.arg() : "");
+                ApplicationManager.getApplication().invokeLater(() ->
+                    appendSystemMessage("Could not attach " + what + ": " + ex.getMessage()));
+            }
+        }
+        return out;
+    }
+
+    private ChatReferences.Attachment resolveOne(ChatReferences.Reference ref, String question,
+                                                 EditorContextProvider.EditorContext ctx, Editor editor) throws Exception {
+        String base = project.getBasePath();
+        switch (ref.kind()) {
+            case SELECTION -> {
+                EditorContextProvider.EditorContext active = ctx.hasSelection ? ctx
+                    : ReadAction.compute(() -> EditorContextProvider.getActive(project));
+                if (!active.hasSelection) return null;
+                return new ChatReferences.Attachment("Selection — " + active.fileName, active.language, active.selectedText);
+            }
+            case FILE -> {
+                VirtualFile vf = findFile(ref.arg());
+                if (vf == null) throw new Exception("no such file in the project");
+                String text = ReadAction.compute(() -> {
+                    var doc = FileDocumentManager.getInstance().getDocument(vf);
+                    return doc != null ? doc.getText() : new String(vf.contentsToByteArray(), vf.getCharset());
+                });
+                String ext = vf.getExtension() != null ? vf.getExtension() : "";
+                return new ChatReferences.Attachment("File — " + relative(vf), ext, text);
+            }
+            case CODEBASE -> {
+                ProjectIndexService index = ProjectIndexService.getInstance(project);
+                if (!index.isReady()) throw new Exception("the project index is not built yet");
+                String found = index.renderSearch(ChatReferences.searchTerms(question), 4000);
+                String digest = index.renderDigest();
+                return new ChatReferences.Attachment("Codebase — matching declarations", "",
+                    digest + (found.isEmpty() ? "" : "\n\n" + found));
+            }
+            case PROBLEMS -> {
+                if (editor == null) return null;
+                List<ProblemsAtCaret.Problem> problems = ReadAction.compute(() -> ProblemsAtCaret.inFile(project, editor.getDocument()));
+                StringBuilder text = new StringBuilder();
+                for (ProblemsAtCaret.Problem p : problems) text.append(p.describe()).append('\n');
+                return new ChatReferences.Attachment("Problems — " + ctx.fileName, "text",
+                    text.length() == 0 ? "No problems reported." : text.toString());
+            }
+            case CHANGES -> {
+                if (base == null) return null;
+                String root = Git.run(base, "rev-parse", "--show-toplevel").trim();
+                String diff = Git.uncommittedDiff(root);
+                return new ChatReferences.Attachment("Uncommitted changes", "diff", diff.isBlank() ? "No uncommitted changes." : diff);
+            }
+            case TERMINAL_LAST_COMMAND -> {
+                CapturedError last = ErrorCaptureService.getInstance(project).latest();
+                if (last == null) throw new Exception("nothing has failed in a run, debug or terminal console yet");
+                return new ChatReferences.Attachment("Last failure — " + last.origin(), "text", last.text());
+            }
+        }
+        return null;
+    }
+
+    private VirtualFile findFile(String spec) {
+        if (spec == null || spec.isEmpty()) return null;
+        String base = project.getBasePath();
+        java.nio.file.Path path = java.nio.file.Path.of(spec);
+        if (!path.isAbsolute() && base != null) path = java.nio.file.Path.of(base).resolve(spec);
+        VirtualFile direct = LocalFileSystem.getInstance().findFileByNioFile(path.normalize());
+        if (direct != null) return direct;
+        String name = spec.substring(spec.lastIndexOf('/') + 1);
+        return ReadAction.compute(() -> {
+            for (VirtualFile vf : FilenameIndex.getVirtualFilesByName(name, GlobalSearchScope.projectScope(project))) {
+                if (vf.getPath().endsWith(spec.replaceFirst("^\\./", ""))) return vf;
+            }
+            return null;
+        });
+    }
+
+    private String relative(VirtualFile vf) {
+        String base = project.getBasePath();
+        String path = vf.getPath();
+        return base != null && path.startsWith(base + "/") ? path.substring(base.length() + 1) : vf.getName();
+    }
+
+    private String activeRelativePath() {
+        VirtualFile[] open = FileEditorManager.getInstance(project).getSelectedFiles();
+        return open.length > 0 ? relative(open[0]) : null;
+    }
+
     // ── Slash command handler ─────────────────────────────────────────────────
 
-    private void handleSlashCommand(String raw, EditorContextProvider.EditorContext ctx) {
-        String[] parts   = raw.substring(1).split("\\s+", 2);
-        String   cmd     = parts[0].toLowerCase();
-        String   arg     = parts.length > 1 ? parts[1].trim() : "";
+    /** Commands answered as an ordinary chat turn, with these words in front of the question. */
+    private static final Map<String, String> CHAT_COMMANDS = Map.of(
+        "optimize", "Improve the performance of this code without changing its behaviour. Show the new code and explain the gain.",
+        "new", "Lay out the files needed for what follows. For each one give its path as a heading and its full contents in a fenced block.");
+
+    /**
+     * Handles a slash command. Returns null when the command has been dealt with
+     * here, or the question to send as an ordinary chat turn — for the chat
+     * commands, the repository's prompt files, and anything unrecognised.
+     */
+    private String handleSlashCommand(String raw, ChatReferences.Parsed parsed, EditorContextProvider.EditorContext ctx) {
+        String   cmd     = parsed.command();
+        String   arg     = parsed.text();
         String   code    = ctx.hasSelection ? ctx.selectedText : ctx.surroundingContext;
         String   lang    = ctx.language.isBlank() ? "text" : ctx.language;
 
+        if (cmd.equals("clear")) {
+            clearAll();
+            return null;
+        }
+
         if (cmd.equals("help")) {
-            appendSystemMessage(
+            promptFiles = PromptFiles.load(project.getBasePath());
+            StringBuilder help = new StringBuilder(
                 "Available commands:\n" +
                 "/fix           — fix bugs in selected code\n" +
                 "/explain       — explain selected code\n" +
                 "/refactor <instruction>  — refactor with instruction\n" +
                 "/test [framework]        — generate unit tests\n" +
                 "/doc           — generate doc comment\n" +
+                "/optimize      — make the selected code faster or leaner\n" +
+                "/new <what>    — sketch the files for something new\n" +
                 "/commit        — generate commit message from git diff\n" +
-                "/help          — show this message"
-            );
-            sendBtn.setEnabled(true);
-            return;
+                "/clear         — start a new conversation\n" +
+                "/help          — show this message");
+            if (!promptFiles.isEmpty()) {
+                help.append("\n\nFrom .github/prompts:");
+                for (PromptFiles.PromptFile p : promptFiles) help.append("\n/").append(p.name()).append(" — ").append(p.description());
+            }
+            help.append("\n\nReferences, anywhere in a message:\n" +
+                "#file:path — attach a file\n#selection — attach the selection\n" +
+                "#codebase — search the project index for what the question is about\n" +
+                "#problems — the errors and warnings in the active file\n" +
+                "#changes — the uncommitted git diff\n" +
+                "#terminalLastCommand — the last failure from a run, debug or terminal console");
+            appendSystemMessage(help.toString());
+            return null;
+        }
+
+        if (CHAT_COMMANDS.containsKey(cmd)) {
+            String prompt = CHAT_COMMANDS.get(cmd);
+            return arg.isEmpty() ? prompt : prompt + "\n\n" + arg;
+        }
+
+        if (!Set.of("fix", "explain", "refactor", "test", "tests", "doc", "commit").contains(cmd)) {
+            promptFiles = PromptFiles.load(project.getBasePath());
+            for (PromptFiles.PromptFile p : promptFiles) {
+                if (!p.name().equals(cmd)) continue;
+                String file = activeRelativePath();
+                return PromptFiles.expand(p.body(), new PromptFiles.Variables(
+                    ctx.selectedText, file != null ? file : "",
+                    project.getBasePath() != null ? project.getBasePath() : "", arg));
+            }
+            return raw;
         }
 
         if (code.isBlank() && !cmd.equals("commit")) {
             appendErrorBubble("/" + cmd + " requires a selected code snippet. Select some code first.");
-            sendBtn.setEnabled(true);
-            return;
+            return null;
         }
 
         appendUserBubble("/" + cmd + (arg.isEmpty() ? "" : " " + arg));
-        JLabel thinking = appendThinkingBubble();
-        final EditorContextProvider.EditorContext capturedCtx = ctx;
+        boolean isCodeResp = !cmd.equals("explain") && !cmd.equals("commit");
 
-        BG.submit(() -> {
-            try {
-                List<LLMClient.ChatMessage> msgs;
-                boolean isCodeResp;
-                msgs = switch (cmd) {
-                    case "fix"      -> { isCodeResp = true;  yield PromptBuilder.fix(code, lang); }
-                    case "explain"  -> { isCodeResp = false; yield PromptBuilder.explain(code, lang); }
-                    case "refactor" -> { isCodeResp = true;  yield arg.isEmpty()
-                        ? PromptBuilder.refactor(code, lang, "improve code quality and readability")
-                        : PromptBuilder.refactor(code, lang, arg); }
-                    case "test"     -> { isCodeResp = true;  yield PromptBuilder.generateTests(code, lang, arg.isEmpty() ? null : arg); }
-                    case "doc"      -> { isCodeResp = true;  yield PromptBuilder.generateDocComment(code, lang); }
-                    case "commit"   -> { isCodeResp = false; yield PromptBuilder.commitMessage(getGitDiff()); }
-                    default         -> { isCodeResp = false;
-                        yield List.of(new LLMClient.ChatMessage("user", raw)); }
-                };
-
-                // Re-assign isCodeResp as effectively-final
-                final boolean showProposal = isCodeResp;
-                String resp = LLMClient.chat(msgs);
-                if (resp == null || resp.isBlank()) resp = "(No response)";
-                final String finalResp = resp;
-
-                ApplicationManager.getApplication().invokeLater(() -> {
-                    removeThinkingBubble(thinking);
-                    appendAssistantMessage(finalResp, showProposal ? capturedCtx : null);
-                    sendBtn.setEnabled(true);
-                });
-            } catch (Exception ex) {
-                final String err = "Error: " + (ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName());
-                ApplicationManager.getApplication().invokeLater(() -> {
-                    removeThinkingBubble(thinking);
-                    appendErrorBubble(err);
-                    sendBtn.setEnabled(true);
-                });
-            }
-        });
+        streamReply(() -> switch (cmd) {
+            case "fix"      -> PromptBuilder.fix(code, lang);
+            case "explain"  -> PromptBuilder.explain(code, lang);
+            case "refactor" -> arg.isEmpty()
+                ? PromptBuilder.refactor(code, lang, "improve code quality and readability")
+                : PromptBuilder.refactor(code, lang, arg);
+            case "test", "tests" -> PromptBuilder.generateTests(code, lang, arg.isEmpty() ? null : arg);
+            case "doc"      -> PromptBuilder.generateDocComment(code, lang);
+            default         -> PromptBuilder.commitMessage(getGitDiff());
+        }, isCodeResp ? ctx : null, false);
+        return null;
     }
 
     // ── Message rendering ─────────────────────────────────────────────────────
@@ -557,6 +758,7 @@ public class LLMChatPanel extends JPanel {
     }
 
     private void clearAll() {
+        cancelled.set(true);
         history.clear();
         messagesPanel.removeAll();
         messagesPanel.revalidate();

@@ -62,6 +62,10 @@ public class LLMCopilotSettings implements PersistentStateComponent<LLMCopilotSe
         /** Characters of project context sent with each completion. */
         public int     projectCompletionChars = 2400;
 
+        // ── Chat ─────────────────────────────────────────────────────────────
+        /** Follow .github/copilot-instructions.md, AGENTS.md and .github/instructions in chat. */
+        public boolean customInstructions     = true;
+
         public String  testFramework    = "";
         public String  enabledLanguages = "";
     }
@@ -94,6 +98,8 @@ public class LLMCopilotSettings implements PersistentStateComponent<LLMCopilotSe
     public boolean isIntentInference()      { return myState.intentInference; }
     public void    setIntentInference(boolean v) { myState.intentInference = v; }
     public String  getTestFramework()     { return myState.testFramework; }
+    public boolean isCustomInstructions()   { return myState.customInstructions; }
+    public void    setCustomInstructions(boolean v) { myState.customInstructions = v; }
     public boolean isErrorAssistEnabled()   { return myState.errorAssistEnabled; }
     public void    setErrorAssistEnabled(boolean v)   { myState.errorAssistEnabled = v; }
     public boolean isErrorAssistAutoOffer() { return myState.errorAssistAutoOffer; }

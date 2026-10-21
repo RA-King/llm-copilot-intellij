@@ -6,6 +6,8 @@ import com.intellij.openapi.command.WriteCommandAction;
 import com.intellij.openapi.editor.*;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.vcs.CommitMessageI;
+import com.intellij.openapi.vcs.VcsDataKeys;
 import com.intellij.openapi.wm.ToolWindowManager;
 import com.llmcopilot.chat.LLMChatPanel;
 import com.llmcopilot.completion.InlineCompletionHandler;
@@ -406,6 +408,8 @@ class GenerateCommitMessageAction extends BaseAction {
     @Override public void actionPerformed(@NotNull AnActionEvent e) {
         Project p = getProject(e);
         if (p == null) return;
+        // Present when invoked from the commit message toolbar; the message goes straight in.
+        CommitMessageI commitBox = e.getData(VcsDataKeys.COMMIT_MESSAGE_CONTROL);
 
         String diff = gitDiff(p);
         if (diff.isBlank()) {
@@ -419,6 +423,10 @@ class GenerateCommitMessageAction extends BaseAction {
         runInBG(() -> {
             try {
                 String msg = LLMClient.chat(PromptBuilder.commitMessage(finalDiff)).trim();
+                if (commitBox != null) {
+                    onEDT(() -> commitBox.setCommitMessage(msg));
+                    return;
+                }
                 onEDT(() -> {
                     Messages.showInfoMessage(
                         p, "Commit message:\n\n" + msg + "\n\n(copied to clipboard)", "LLM Copilot");
