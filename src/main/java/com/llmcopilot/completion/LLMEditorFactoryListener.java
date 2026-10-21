@@ -24,6 +24,9 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * Escape key handling:
  *   Overrides the EditorEscape action similarly.
+ *
+ * Ghost text has the first claim on both keys; a next edit suggestion takes
+ * them when no ghost text is showing.
  */
 @SuppressWarnings({"rawtypes","unchecked"})
 public class LLMEditorFactoryListener implements EditorFactoryListener {
@@ -31,6 +34,7 @@ public class LLMEditorFactoryListener implements EditorFactoryListener {
     private static final ConcurrentHashMap<Editor, InlineCompletionHandler> HANDLERS     = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<Editor, DocCommentHandler>       DOC_HANDLERS = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<Editor, GhostTextManager>        GHOST        = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Editor, NextEditManager>         NEXT_EDIT    = new ConcurrentHashMap<>();
 
     private static volatile boolean tabHandlerInstalled = false;
 
@@ -53,6 +57,9 @@ public class LLMEditorFactoryListener implements EditorFactoryListener {
         DocCommentHandler docHandler = new DocCommentHandler(editor);
         DOC_HANDLERS.put(editor, docHandler);
 
+        // Next edit suggestions
+        NEXT_EDIT.put(editor, new NextEditManager(editor, ghost));
+
         // Install Tab/Escape handlers once (global override)
         setupTabHandler();
     }
@@ -69,6 +76,9 @@ public class LLMEditorFactoryListener implements EditorFactoryListener {
 
         DocCommentHandler dh = DOC_HANDLERS.remove(editor);
         if (dh != null) dh.dispose();
+
+        NextEditManager nes = NEXT_EDIT.remove(editor);
+        if (nes != null) nes.dispose();
     }
 
     // ── Global Tab / Escape override ──────────────────────────────────────────
@@ -89,6 +99,11 @@ public class LLMEditorFactoryListener implements EditorFactoryListener {
                 GhostTextManager ghost = GHOST.get(editor);
                 if (ghost != null && ghost.hasSuggestion()) {
                     ghost.acceptSuggestion();
+                    return; // consumed
+                }
+                NextEditManager nes = NEXT_EDIT.get(editor);
+                if (nes != null && nes.hasSuggestion()) {
+                    nes.acceptOrJump();
                     return; // consumed
                 }
                 // No ghost text — normal Tab (indent / completion list)
@@ -118,6 +133,11 @@ public class LLMEditorFactoryListener implements EditorFactoryListener {
                     // belongs and offers the same one on the next keystroke.
                     InlineCompletionHandler.recordDismissal(editor);
                     ghost.dismiss();
+                    return; // consumed
+                }
+                NextEditManager nes = NEXT_EDIT.get(editor);
+                if (nes != null && nes.hasSuggestion()) {
+                    nes.dismiss();
                     return; // consumed
                 }
                 originalEsc.execute(editor, caret, ctx);
