@@ -12,7 +12,15 @@ import com.intellij.psi.search.FilenameIndex;
 import com.intellij.psi.search.GlobalSearchScope;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.util.ui.JBUI;
+import com.intellij.diff.DiffContentFactory;
+import com.intellij.diff.DiffManager;
+import com.intellij.diff.requests.SimpleDiffRequest;
+import com.intellij.openapi.ui.Messages;
 import com.llmcopilot.actions.ProblemsAtCaret;
+import com.llmcopilot.agent.AgentProtocol;
+import com.llmcopilot.agent.AgentSession;
+import com.llmcopilot.agent.WorkspaceTools;
+import com.llmcopilot.settings.LLMCopilotSettings;
 import com.llmcopilot.errors.CapturedError;
 import com.llmcopilot.errors.ErrorCaptureService;
 import com.llmcopilot.index.ProjectIndexService;
@@ -28,6 +36,7 @@ import java.util.*;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Full AI Chat panel — Junie AI Assistant level.
@@ -60,6 +69,9 @@ public class LLMChatPanel extends JPanel {
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private volatile boolean running = false;
     private List<PromptFiles.PromptFile> promptFiles = List.of();
+    private final JComboBox<String> modeBox = new JComboBox<>(new String[] { "Ask", "Agent" });
+    /** Commands the user said to always run, for the life of this window. */
+    private final Set<String> allowedCommands = ConcurrentHashMap.newKeySet();
 
     /** Characters of any one attachment sent with a message. */
     private static final int ATTACHMENT_BUDGET = 24_000;
@@ -156,7 +168,12 @@ public class LLMChatPanel extends JPanel {
         sendBtn.addActionListener(e -> { if (running) cancelled.set(true); else send(); });
         clearBtn.addActionListener(e -> clearAll());
 
+        modeBox.setToolTipText("Ask answers questions; Agent reads, edits and runs commands to finish a task");
+        modeBox.addActionListener(e -> inputArea.setToolTipText("Agent".equals(modeBox.getSelectedItem())
+            ? "Describe a task — the agent reads, edits and runs commands to finish it" : null));
+
         JPanel btnRow = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        btnRow.add(modeBox);
         btnRow.add(clearBtn);
         btnRow.add(sendBtn);
 
@@ -241,6 +258,17 @@ public class LLMChatPanel extends JPanel {
             : EditorContextProvider.EditorContext.EMPTY;
 
         ChatReferences.Parsed parsed = ChatReferences.parse(raw);
+
+        // ── Agent ──────────────────────────────────────────────────────────────
+        boolean agentCommand = "agent".equals(parsed.command());
+        if (agentCommand || (parsed.command() == null && "Agent".equals(modeBox.getSelectedItem()))) {
+            if (parsed.text().isEmpty()) {
+                appendSystemMessage("Give the agent a task: /agent add input validation to the signup form");
+                return;
+            }
+            runAgentTask(raw, parsed, ctx);
+            return;
+        }
 
         // ── Slash command dispatch ─────────────────────────────────────────────
         String question = parsed.text();
@@ -385,6 +413,198 @@ public class LLMChatPanel extends JPanel {
         return -1;
     }
 
+    // ── Agent ─────────────────────────────────────────────────────────────────
+
+    /** One model turn of an agent run: the bubble its text streams into. */
+    private final class Turn {
+        final AtomicReference<String> text = new AtomicReference<>("");
+        final AtomicBoolean queued = new AtomicBoolean(false);
+        Component live;
+
+        void show(String latest) {
+            text.set(latest);
+            if (!queued.compareAndSet(false, true)) return;
+            ApplicationManager.getApplication().invokeLater(() -> {
+                queued.set(false);
+                String now = text.get();
+                if (now.isBlank()) return;
+                live = replaceLive(live, now);
+            });
+        }
+    }
+
+    private String environment() {
+        String os = System.getProperty("os.name", "");
+        StringBuilder env = new StringBuilder()
+            .append("Operating system: ").append(os).append(" ").append(System.getProperty("os.version", "")).append(".\n")
+            .append("Shell: ").append(os.toLowerCase(Locale.ROOT).contains("win") ? "cmd.exe" : System.getenv().getOrDefault("SHELL", "/bin/sh")).append(".\n")
+            .append("Workspace root: ").append(project.getBasePath()).append(". All paths are relative to it.");
+        String active = activeRelativePath();
+        if (active != null) env.append("\nThe user has ").append(active).append(" open.");
+        ProjectIndexService index = ProjectIndexService.getInstance(project);
+        if (index.isReady()) env.append("\n\n").append(index.renderDigest());
+        return env.toString();
+    }
+
+    private WorkspaceTools.Decision confirmCommand(String command) {
+        if (allowedCommands.contains(command)) return WorkspaceTools.Decision.RUN;
+        int[] choice = { 2 };
+        ApplicationManager.getApplication().invokeAndWait(() -> choice[0] = Messages.showDialog(project,
+            "The agent wants to run:\n\n" + command, "Run Command?",
+            new String[] { "Run", "Always Run This", "Skip" }, 0, Messages.getQuestionIcon()));
+        if (choice[0] == 1) allowedCommands.add(command);
+        return choice[0] == 0 || choice[0] == 1 ? WorkspaceTools.Decision.RUN : WorkspaceTools.Decision.SKIP;
+    }
+
+    private void runAgentTask(String raw, ChatReferences.Parsed parsed, EditorContextProvider.EditorContext ctx) {
+        if (project.getBasePath() == null) {
+            appendErrorBubble("The agent needs a project directory to work in.");
+            return;
+        }
+        appendUserBubble(raw);
+        JLabel thinking = appendThinkingBubble();
+        setRunning(true);
+
+        Editor editor = FileEditorManager.getInstance(project).getSelectedTextEditor();
+        String relPath = activeRelativePath();
+        String environment = environment();
+        LLMCopilotSettings settings = LLMCopilotSettings.getInstance();
+        WorkspaceTools tools = new WorkspaceTools(project, this::confirmCommand, settings.getAgentCommandTimeoutSeconds());
+        List<ChatReferences.Reference> refs = new ArrayList<>(parsed.references());
+        if (ctx.hasSelection && refs.stream().noneMatch(r -> r.kind() == ChatReferences.Kind.SELECTION)) {
+            refs.add(0, ChatReferences.Reference.of(ChatReferences.Kind.SELECTION));
+        }
+        List<LLMClient.ChatMessage> earlier = new ArrayList<>(history.subList(Math.max(0, history.size() - 6), history.size()));
+
+        BG.submit(() -> {
+            AtomicReference<Turn> turn = new AtomicReference<>(new Turn());
+            AgentSession.Observer observer = new AgentSession.Observer() {
+                @Override public void turnStarted(int step) {
+                    turn.set(new Turn());
+                    ApplicationManager.getApplication().invokeLater(() -> removeThinkingBubble(thinking));
+                }
+                @Override public void turnText(String text) { turn.get().show(text); }
+                @Override public void toolStarted(AgentProtocol.ToolCall call) { }
+                @Override public void toolFinished(AgentProtocol.ToolCall call, AgentSession.Outcome outcome) {
+                    ApplicationManager.getApplication().invokeLater(() ->
+                        appendStepLine((outcome.ok() ? "✓ " : "✗ ") + outcome.summary(), outcome.ok()));
+                }
+            };
+
+            AgentSession.Result result;
+            String task;
+            try {
+                List<ChatReferences.Attachment> attachments = resolve(refs, parsed.text(), ctx, editor);
+                String rendered = ChatReferences.render(attachments);
+                StringBuilder full = new StringBuilder();
+                if (!earlier.isEmpty()) {
+                    full.append("Earlier in this conversation:\n");
+                    for (LLMClient.ChatMessage m : earlier) {
+                        String content = m.content().length() > 1500 ? m.content().substring(0, 1500) : m.content();
+                        full.append("user".equals(m.role()) ? "User: " : "Assistant: ").append(content).append("\n\n");
+                    }
+                    full.append("The task:\n");
+                }
+                full.append(parsed.text());
+                if (!rendered.isEmpty()) full.append("\n\n").append(rendered);
+                task = full.toString();
+
+                String instructions = CustomInstructions.forFile(project.getBasePath(), relPath);
+                result = AgentSession.run(task,
+                    (msgs, onDelta, cancel) -> LLMClient.chatStream(CustomInstructions.withInstructions(msgs, instructions), onDelta, cancel, 4096),
+                    tools, observer,
+                    new AgentSession.Options(settings.getAgentMaxSteps(), 60_000, environment),
+                    cancelled::get);
+            } catch (Exception ex) {
+                task = parsed.text();
+                result = new AgentSession.Result(AgentSession.Status.ERROR,
+                    ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName(), 0);
+            }
+
+            AgentSession.Result finalResult = result;
+            String summary = switch (result.status()) {
+                case ERROR -> "The run failed: " + result.summary();
+                case STOPPED -> "Stopped.";
+                default -> result.summary();
+            };
+            history.add(new LLMClient.ChatMessage("user", task));
+            history.add(new LLMClient.ChatMessage("assistant", summary.isEmpty() ? "(no summary)" : summary));
+
+            ApplicationManager.getApplication().invokeLater(() -> {
+                setRunning(false);
+                removeThinkingBubble(thinking);
+                if (finalResult.status() != AgentSession.Status.DONE && !summary.isEmpty()) {
+                    if (finalResult.status() == AgentSession.Status.ERROR) appendErrorBubble(summary);
+                    else appendSystemMessage(summary);
+                }
+                if (!tools.originals().isEmpty()) addMessage(changesPanel(tools));
+                appendStepLine(finalResult.steps() + " step" + (finalResult.steps() == 1 ? "" : "s"), true);
+            });
+        });
+    }
+
+    private void appendStepLine(String text, boolean ok) {
+        JLabel label = new JLabel("  " + text);
+        label.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 11));
+        label.setForeground(ok ? Color.GRAY : COL_ERR_FG);
+        label.setAlignmentX(Component.LEFT_ALIGNMENT);
+        addMessage(label);
+    }
+
+    /** The files an agent run touched, each with a diff, and a way to put them all back. */
+    private JPanel changesPanel(WorkspaceTools tools) {
+        Map<String, String> originals = new LinkedHashMap<>(tools.originals());
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(new Color(200, 200, 200), 1, true), JBUI.Borders.empty(6, 8)));
+        panel.setBackground(COL_ASST_BG);
+
+        JLabel title = new JLabel(originals.size() + " file" + (originals.size() == 1 ? "" : "s") + " changed");
+        title.setFont(title.getFont().deriveFont(Font.BOLD, 12f));
+        title.setAlignmentX(Component.LEFT_ALIGNMENT);
+        panel.add(title);
+
+        List<JButton> buttons = new ArrayList<>();
+        for (Map.Entry<String, String> e : originals.entrySet()) {
+            JPanel row = new JPanel(new BorderLayout(6, 0));
+            row.setOpaque(false);
+            row.setAlignmentX(Component.LEFT_ALIGNMENT);
+            JLabel name = new JLabel(e.getKey() + (e.getValue() == null ? " (new)" : ""));
+            name.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 11));
+            JButton diff = new JButton("Diff");
+            diff.addActionListener(a -> showAgentDiff(tools, e.getKey(), e.getValue()));
+            buttons.add(diff);
+            row.add(name, BorderLayout.CENTER);
+            row.add(diff, BorderLayout.EAST);
+            row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
+            panel.add(row);
+        }
+
+        JButton undo = new JButton("Undo all");
+        undo.setAlignmentX(Component.LEFT_ALIGNMENT);
+        undo.addActionListener(a -> {
+            if (Messages.showYesNoDialog(project, "Put every file this agent run changed back the way it was?",
+                    "Undo Agent Changes", "Undo All", "Cancel", Messages.getWarningIcon()) != Messages.YES) return;
+            int restored = tools.undoAll();
+            for (JButton b : buttons) b.setEnabled(false);
+            undo.setEnabled(false);
+            undo.setText("Undone — " + restored + " file" + (restored == 1 ? "" : "s") + " restored");
+        });
+        panel.add(Box.createVerticalStrut(4));
+        panel.add(undo);
+        return panel;
+    }
+
+    private void showAgentDiff(WorkspaceTools tools, String rel, String original) {
+        VirtualFile vf = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(tools.root().resolve(rel));
+        DiffContentFactory factory = DiffContentFactory.getInstance();
+        var before = factory.create(original == null ? "" : original);
+        var after = vf != null ? factory.create(project, vf) : factory.create("(deleted)");
+        DiffManager.getInstance().showDiff(project,
+            new SimpleDiffRequest(rel + " (agent changes)", before, after, "Before", "After"));
+    }
+
     // ── References ────────────────────────────────────────────────────────────
 
     private List<ChatReferences.Attachment> resolve(List<ChatReferences.Reference> refs, String question,
@@ -518,6 +738,7 @@ public class LLMChatPanel extends JPanel {
                 "/doc           — generate doc comment\n" +
                 "/optimize      — make the selected code faster or leaner\n" +
                 "/new <what>    — sketch the files for something new\n" +
+                "/agent <task>  — hand a task to the agent: it reads, edits and runs commands\n" +
                 "/commit        — generate commit message from git diff\n" +
                 "/clear         — start a new conversation\n" +
                 "/help          — show this message");
