@@ -140,8 +140,8 @@ write a commit message from the current diff.
 Replies stream into the chat as the model writes them, and **Send** turns into
 **Stop** while one is arriving — stopping keeps what has been written so far.
 Slash commands work on the selection: `/fix`, `/explain`, `/refactor <how>`,
-`/test [framework]`, `/doc`, `/optimize`, `/new <what>`, `/commit`, `/clear` and
-`/help`. References pull material into any question, typed anywhere in it:
+`/test [framework]`, `/doc`, `/optimize`, `/new <what>`, `/agent <task>`, `/commit`,
+`/clear` and `/help`. References pull material into any question, typed anywhere in it:
 
 | Reference | Attaches |
 |---|---|
@@ -151,6 +151,22 @@ Slash commands work on the selection: `/fix`, `/explain`, `/refactor <how>`,
 | `#problems` | The errors and warnings in the active file |
 | `#changes` | The uncommitted git diff |
 | `#terminalLastCommand` | The last failure captured from a run, debug or terminal console |
+
+**Agent mode.** Switch the picker beside **Clear** from **Ask** to **Agent**, or
+start a message with `/agent`, and give the chat a task rather than a question, such as
+*"add input validation to the signup form and a test for it"*. The agent works
+through it step by step, and each step shows up in the chat as it happens. It lists,
+reads and searches files, finds declarations through the project index, replaces
+exact passages or writes whole files, reads the errors and warnings the IDE reports
+for what it changed, and runs commands such as tests and builds. **Every command asks
+first**: *Run*, *Always Run This* (for the rest of the session), or *Skip*. Edits go
+through the editor's documents and are saved as it goes, so a test it runs sees them.
+When it finishes, a panel lists every file it touched, with **Diff** against how
+each file was before and **Undo all** to put them back, deleting any it created.
+**Stop** ends the run at once. Tool calls are plain tagged blocks rather than a
+provider's function calling, so it works with every provider, though larger models
+follow it far more reliably than small local ones. The step limit (25) and the
+command timeout (120 s) are in the settings.
 
 **Repository instructions and prompt files.** The plugin reads the same files
 GitHub Copilot does, so a repository set up for one works with the other.
@@ -300,6 +316,8 @@ model name and API key, and use **LLM Copilot: Test Connection** to confirm.
 | Auto-trigger | `true` | Off means completions only on the shortcut. |
 | Infer intent | `true` | Read what the code is working towards and tell the model what the next statement most likely does. |
 | Show status bar | `true` | Status widget in the bottom bar. |
+| Agent step limit | `25` | Most tool calls the agent may make for one task. |
+| Agent command timeout | `120` s | How long an approved agent command may run before it is stopped. |
 | Follow the repository's instruction files in chat | `true` | Read `.github/copilot-instructions.md`, `AGENTS.md` and `.github/instructions/*.instructions.md` into every chat request. |
 | Test framework | *(blank)* | Blank lets the model pick per language. |
 | Offer solutions for errors | `true` | Watch run, debug and terminal output for failures. |
@@ -517,7 +535,7 @@ first use, cached afterwards. This is how CI builds.
 ./gradlew test
 ```
 
-355 unit tests cover the logic that does not need a running IDE:
+378 unit tests cover the logic that does not need a running IDE:
 
 | Suite | What it pins down |
 |---|---|
@@ -533,6 +551,8 @@ first use, cached afterwards. This is how CI builds.
 | `SuggestionGateTest` | Every reason ghost text refuses to appear — code after the caret, deletions, strings, comments, dismissals, short identifiers, selections — plus the line budget per shape and the balanced-cut trimming. |
 | `EditHistoryTest` | Recording edits as whole lines, merging keystrokes and adjacent lines, forgetting edits typed and deleted again, keeping older edits on the right lines, and rendering. |
 | `NextEditTest` | The prediction prompt, reading search/replace blocks and NONE, placing the edit nearest the caret, rejecting a suggestion that reverts the last edit, and narrowing the edit for display. |
+| `AgentProtocolTest` | The agent's system prompt, reading tagged and fenced tool calls and malformed ones, arguments, truncation, history compaction, unique search/replace matching, and keeping paths inside the workspace. |
+| `AgentSessionTest` | The agent loop against a scripted model: tool results fed back, failures and exceptions, retries after a garbled call, the step limit, cancellation and model errors. |
 | `GhostTextPacingTest` | Dismissal memory and its release conditions, forward-typing detection, the latency-led debounce across fast, slow and middling models, and typing through a suggestion. |
 | `SourceSummaryTest` | Declaration and import extraction for Java, Kotlin, TypeScript, Python, Rust and Go, plus the import window and minified-line limits. |
 | `ProjectSearchTest` | Ranking files for `#codebase` by exact names, path segments and partial matches, and the rendered result. |
@@ -561,6 +581,7 @@ src/main/java/com/llmcopilot/
 ├── chat/         tool window, editor context capture, code proposals,
 │                 # references, repository instructions and prompt files
 ├── errors/       error capture, trace parsing, deep context, the solutions pane
+├── agent/        agent mode: the tool-call protocol, the loop, and the workspace tools
 ├── review/       code review prompts and reading findings back
 ├── services/     LLMClient (all provider HTTP, streaming), PromptBuilder, AssistPrompts
 ├── settings/     persisted state and the settings UI

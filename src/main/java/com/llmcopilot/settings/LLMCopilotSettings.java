@@ -69,6 +69,10 @@ public class LLMCopilotSettings implements PersistentStateComponent<LLMCopilotSe
         // ── Chat ─────────────────────────────────────────────────────────────
         /** Follow .github/copilot-instructions.md, AGENTS.md and .github/instructions in chat. */
         public boolean customInstructions     = true;
+        /** Most tool calls the agent may make for one task. */
+        public int     agentMaxSteps          = 25;
+        /** How long an approved agent command may run. */
+        public int     agentCommandTimeoutSeconds = 120;
 
         public String  testFramework    = "";
         public String  enabledLanguages = "";
@@ -104,6 +108,8 @@ public class LLMCopilotSettings implements PersistentStateComponent<LLMCopilotSe
     public String  getTestFramework()     { return myState.testFramework; }
     public boolean isCustomInstructions()   { return myState.customInstructions; }
     public void    setCustomInstructions(boolean v) { myState.customInstructions = v; }
+    public int     getAgentMaxSteps()       { return myState.agentMaxSteps; }
+    public int     getAgentCommandTimeoutSeconds() { return myState.agentCommandTimeoutSeconds; }
     public boolean isErrorAssistEnabled()   { return myState.errorAssistEnabled; }
     public void    setErrorAssistEnabled(boolean v)   { myState.errorAssistEnabled = v; }
     public boolean isErrorAssistAutoOffer() { return myState.errorAssistAutoOffer; }

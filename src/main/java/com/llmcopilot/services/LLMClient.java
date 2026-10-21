@@ -96,10 +96,15 @@ public class LLMClient {
      */
     public static String chatStream(List<ChatMessage> messages, java.util.function.Consumer<String> onDelta,
                                     java.util.function.BooleanSupplier cancelled) throws Exception {
+        return chatStream(messages, onDelta, cancelled, CHAT_MAX_TOKENS);
+    }
+
+    public static String chatStream(List<ChatMessage> messages, java.util.function.Consumer<String> onDelta,
+                                    java.util.function.BooleanSupplier cancelled, int maxTokens) throws Exception {
         LLMCopilotSettings s = LLMCopilotSettings.getInstance();
-        StreamTarget target = streamTarget(messages, s);
+        StreamTarget target = streamTarget(messages, s, maxTokens);
         if (target == null) {
-            String reply = chat(messages, CHAT_MAX_TOKENS);
+            String reply = chat(messages, maxTokens);
             if (!cancelled.getAsBoolean()) onDelta.accept(reply);
             return reply;
         }
@@ -153,14 +158,14 @@ public class LLMClient {
         return true;
     }
 
-    private static StreamTarget streamTarget(List<ChatMessage> messages, LLMCopilotSettings s) {
+    private static StreamTarget streamTarget(List<ChatMessage> messages, LLMCopilotSettings s, int maxTokens) {
         Map<String,String> bearer = s.getApiKey().isEmpty() ? Map.of() : Map.of("Authorization", "Bearer " + s.getApiKey());
         StreamDecoder.Framing sse = StreamDecoder.Framing.SSE;
         StreamDecoder.Dialect openai = StreamDecoder.Dialect.OPENAI;
 
         switch (s.getProvider()) {
             case "ollama": {
-                JsonObject body = GSON.fromJson(buildOpenAIBody(messages, CHAT_MAX_TOKENS, s.getModel(), 0), JsonObject.class);
+                JsonObject body = GSON.fromJson(buildOpenAIBody(messages, maxTokens, s.getModel(), 0), JsonObject.class);
                 body.remove("max_tokens");
                 body.addProperty("stream", true);
                 JsonObject opts = new JsonObject();
@@ -171,20 +176,20 @@ public class LLMClient {
             }
             case "anthropic":
                 return new StreamTarget("https://api.anthropic.com/v1/messages",
-                    streaming(buildAnthropicBody(messages, CHAT_MAX_TOKENS, s.getModel(), s.getTemperature())),
+                    streaming(buildAnthropicBody(messages, maxTokens, s.getModel(), s.getTemperature())),
                     Map.of("x-api-key", s.getApiKey(), "anthropic-version", "2023-06-01"),
                     sse, StreamDecoder.Dialect.ANTHROPIC);
             case "mistral":
-                return openaiTarget("https://api.mistral.ai/v1/chat/completions", messages, s, "mistral-large-latest", bearer);
+                return openaiTarget("https://api.mistral.ai/v1/chat/completions", messages, s, "mistral-large-latest", bearer, maxTokens);
             case "gemini":
                 return openaiTarget("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-                    messages, s, "gemini-2.5-flash", bearer);
+                    messages, s, "gemini-2.5-flash", bearer, maxTokens);
             case "deepseek":
-                return openaiTarget("https://api.deepseek.com/v1/chat/completions", messages, s, "deepseek-chat", bearer);
+                return openaiTarget("https://api.deepseek.com/v1/chat/completions", messages, s, "deepseek-chat", bearer, maxTokens);
             case "grok":
-                return openaiTarget("https://api.x.ai/v1/chat/completions", messages, s, "grok-3-mini", bearer);
+                return openaiTarget("https://api.x.ai/v1/chat/completions", messages, s, "grok-3-mini", bearer, maxTokens);
             case "azure": {
-                JsonObject body = GSON.fromJson(buildOpenAIBody(messages, CHAT_MAX_TOKENS, "", s.getTemperature()), JsonObject.class);
+                JsonObject body = GSON.fromJson(buildOpenAIBody(messages, maxTokens, "", s.getTemperature()), JsonObject.class);
                 body.remove("model");
                 body.addProperty("stream", true);
                 return new StreamTarget(s.getBaseUrl().replaceAll("/$", "") + "/chat/completions?api-version=2024-12-01-preview",
@@ -202,15 +207,15 @@ public class LLMClient {
                 };
                 Map<String,String> hdrs = new HashMap<>(bearer);
                 if ("openrouter".equals(s.getProvider())) hdrs.put("X-Title", "LLM Copilot IntelliJ");
-                return openaiTarget(base + "/v1/chat/completions", messages, s, s.getModel(), hdrs);
+                return openaiTarget(base + "/v1/chat/completions", messages, s, s.getModel(), hdrs, maxTokens);
             }
         }
     }
 
     private static StreamTarget openaiTarget(String url, List<ChatMessage> messages, LLMCopilotSettings s,
-                                             String fallbackModel, Map<String,String> headers) {
+                                             String fallbackModel, Map<String,String> headers, int maxTokens) {
         String model = s.getModel().isEmpty() ? fallbackModel : s.getModel();
-        return new StreamTarget(url, streaming(buildOpenAIBody(messages, CHAT_MAX_TOKENS, model, s.getTemperature())),
+        return new StreamTarget(url, streaming(buildOpenAIBody(messages, maxTokens, model, s.getTemperature())),
             headers, StreamDecoder.Framing.SSE, StreamDecoder.Dialect.OPENAI);
     }
 
