@@ -139,6 +139,9 @@ write a commit message from the current diff.
 
 Replies stream into the chat as the model writes them, and **Send** turns into
 **Stop** while one is arriving — stopping keeps what has been written so far.
+Each of your own messages has **Copy** and **Edit**: Edit puts the question back in
+the input box and drops the replies after it, so the conversation carries on from
+the corrected question. **↑ ↓** beside the mode picker jump between your questions.
 Slash commands work on the selection: `/fix`, `/explain`, `/refactor <how>`,
 `/test [framework]`, `/doc`, `/optimize`, `/new <what>`, `/agent <task>`, `/commit`,
 `/clear` and `/help`. References pull material into any question, typed anywhere in it:
@@ -535,7 +538,7 @@ first use, cached afterwards. This is how CI builds.
 ./gradlew test
 ```
 
-378 unit tests cover the logic that does not need a running IDE:
+383 unit tests cover the logic that does not need a running IDE:
 
 | Suite | What it pins down |
 |---|---|
@@ -559,6 +562,7 @@ first use, cached afterwards. This is how CI builds.
 | `ChatReferencesTest` | Slash commands, `#file` paths quoted and bare, the named references, attachment rendering and search-term splitting. |
 | `CustomInstructionsTest` | Front matter, `applyTo` globs, ordering of scoped and unconditional instructions, folding into the system message, and loading from a repository. |
 | `PromptFilesTest` | Command names and descriptions, Copilot-style variables and input defaults, and loading `.github/prompts`. |
+| `LLMClientTest` | Reading non-streamed replies: Anthropic text blocks after a thinking block, and OpenAI replies whose content is null or missing. |
 | `StreamDecoderTest` | Lines split across chunks, SSE and NDJSON framing, and OpenAI, Anthropic and Ollama deltas, stop events and mid-stream errors. |
 | `CodeReviewTest` | Line numbering, diffs rewritten with new-file line numbers, and reading findings back in their common variations. |
 | `AssistPromptsTest` | The problem-fix window, code-block extraction, terminal suggestions and pull request prompts. |
