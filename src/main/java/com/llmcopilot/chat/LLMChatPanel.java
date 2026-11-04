@@ -36,6 +36,7 @@ import java.util.*;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -64,7 +65,10 @@ public class LLMChatPanel extends JPanel {
     private final JButton   sendBtn, clearBtn, contextBtn;
     private final JLabel    contextLabel;    // shows "📄 file.java · 3 lines selected"
 
-    private final List<LLMClient.ChatMessage> history = new ArrayList<>();
+    /** Written from the background thread a reply arrives on, read on the EDT. */
+    private final List<LLMClient.ChatMessage> history = new CopyOnWriteArrayList<>();
+    /** Bumped when the conversation is cleared or rewound, so a reply still in flight is not recorded. */
+    private final AtomicInteger conversation = new AtomicInteger();
     private boolean includeContext = true;   // toggled by context button
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private volatile boolean running = false;
@@ -172,7 +176,16 @@ public class LLMChatPanel extends JPanel {
         modeBox.addActionListener(e -> inputArea.setToolTipText("Agent".equals(modeBox.getSelectedItem())
             ? "Describe a task — the agent reads, edits and runs commands to finish it" : null));
 
+        JButton prevTurn = new JButton("↑");
+        JButton nextTurn = new JButton("↓");
+        prevTurn.setToolTipText("Previous question");
+        nextTurn.setToolTipText("Next question");
+        prevTurn.addActionListener(e -> jumpTurn(-1));
+        nextTurn.addActionListener(e -> jumpTurn(1));
+
         JPanel btnRow = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        btnRow.add(prevTurn);
+        btnRow.add(nextTurn);
         btnRow.add(modeBox);
         btnRow.add(clearBtn);
         btnRow.add(sendBtn);
@@ -292,7 +305,7 @@ public class LLMChatPanel extends JPanel {
             contextBlock = "";
         }
 
-        appendUserBubble(userDisplay);
+        appendUserBubble(userDisplay, raw);
 
         // Whatever the references need from the editor is read now, on the EDT;
         // the slow parts — files, git, the index — are read in the background.
@@ -330,12 +343,17 @@ public class LLMChatPanel extends JPanel {
         StringBuffer streamed = new StringBuffer();
         AtomicBoolean updateQueued = new AtomicBoolean(false);
         Component[] live = { null };
+        int started = conversation.get();
+        LLMClient.ChatMessage[] asked = { null };
 
         BG.submit(() -> {
             try {
                 List<LLMClient.ChatMessage> msgs = CustomInstructions.withInstructions(request.call(),
                     CustomInstructions.forFile(project.getBasePath(), relPath));
-                if (remember) history.add(msgs.get(msgs.size() - 1));
+                if (remember && conversation.get() == started) {
+                    asked[0] = msgs.get(msgs.size() - 1);
+                    history.add(asked[0]);
+                }
 
                 String resp = LLMClient.chatStream(msgs, delta -> {
                     streamed.append(delta);
@@ -350,8 +368,12 @@ public class LLMChatPanel extends JPanel {
                 }, cancelled::get);
 
                 boolean stopped = cancelled.get();
-                if (resp == null || resp.isBlank()) resp = stopped ? "" : "(No response — check provider settings)";
-                if (remember && !resp.isEmpty()) history.add(new LLMClient.ChatMessage("assistant", resp));
+                boolean answered = resp != null && !resp.isBlank();
+                if (!answered) resp = stopped ? "" : "(No response — check provider settings)";
+                if (asked[0] != null && conversation.get() == started) {
+                    if (answered) history.add(new LLMClient.ChatMessage("assistant", resp));
+                    else dropUnanswered(asked[0]);
+                }
                 final String finalResp = resp;
                 ApplicationManager.getApplication().invokeLater(() -> {
                     setRunning(false);
@@ -361,6 +383,7 @@ public class LLMChatPanel extends JPanel {
                     if (stopped) appendSystemMessage("Stopped.");
                 });
             } catch (Exception ex) {
+                if (asked[0] != null) dropUnanswered(asked[0]);
                 final String err = "Error: " + (ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName());
                 ApplicationManager.getApplication().invokeLater(() -> {
                     setRunning(false);
@@ -370,6 +393,15 @@ public class LLMChatPanel extends JPanel {
                 });
             }
         });
+    }
+
+    /**
+     * A question that got no answer is taken back out of the history, so the
+     * next request does not carry two user turns in a row.
+     */
+    private void dropUnanswered(LLMClient.ChatMessage asked) {
+        int last = history.size() - 1;
+        if (last >= 0 && history.get(last) == asked) history.remove(last);
     }
 
     private void setRunning(boolean value) {
@@ -461,9 +493,10 @@ public class LLMChatPanel extends JPanel {
             appendErrorBubble("The agent needs a project directory to work in.");
             return;
         }
-        appendUserBubble(raw);
+        appendUserBubble(raw, raw);
         JLabel thinking = appendThinkingBubble();
         setRunning(true);
+        int started = conversation.get();
 
         Editor editor = FileEditorManager.getInstance(project).getSelectedTextEditor();
         String relPath = activeRelativePath();
@@ -493,6 +526,7 @@ public class LLMChatPanel extends JPanel {
 
             AgentSession.Result result;
             String task;
+            String asked = parsed.text();
             try {
                 List<ChatReferences.Attachment> attachments = resolve(refs, parsed.text(), ctx, editor);
                 String rendered = ChatReferences.render(attachments);
@@ -505,8 +539,8 @@ public class LLMChatPanel extends JPanel {
                     }
                     full.append("The task:\n");
                 }
-                full.append(parsed.text());
-                if (!rendered.isEmpty()) full.append("\n\n").append(rendered);
+                if (!rendered.isEmpty()) asked += "\n\n" + rendered;
+                full.append(asked);
                 task = full.toString();
 
                 String instructions = CustomInstructions.forFile(project.getBasePath(), relPath);
@@ -516,7 +550,6 @@ public class LLMChatPanel extends JPanel {
                     new AgentSession.Options(settings.getAgentMaxSteps(), 60_000, environment),
                     cancelled::get);
             } catch (Exception ex) {
-                task = parsed.text();
                 result = new AgentSession.Result(AgentSession.Status.ERROR,
                     ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName(), 0);
             }
@@ -527,8 +560,11 @@ public class LLMChatPanel extends JPanel {
                 case STOPPED -> "Stopped.";
                 default -> result.summary();
             };
-            history.add(new LLMClient.ChatMessage("user", task));
-            history.add(new LLMClient.ChatMessage("assistant", summary.isEmpty() ? "(no summary)" : summary));
+            // The task as asked, not with the earlier conversation folded in, or every run would repeat it.
+            if (conversation.get() == started) {
+                history.add(new LLMClient.ChatMessage("user", asked));
+                history.add(new LLMClient.ChatMessage("assistant", summary.isEmpty() ? "(no summary)" : summary));
+            }
 
             ApplicationManager.getApplication().invokeLater(() -> {
                 setRunning(false);
@@ -778,7 +814,7 @@ public class LLMChatPanel extends JPanel {
             return null;
         }
 
-        appendUserBubble("/" + cmd + (arg.isEmpty() ? "" : " " + arg));
+        appendUserBubble("/" + cmd + (arg.isEmpty() ? "" : " " + arg), raw);
         boolean isCodeResp = !cmd.equals("explain") && !cmd.equals("commit");
 
         streamReply(() -> switch (cmd) {
@@ -787,7 +823,7 @@ public class LLMChatPanel extends JPanel {
             case "refactor" -> arg.isEmpty()
                 ? PromptBuilder.refactor(code, lang, "improve code quality and readability")
                 : PromptBuilder.refactor(code, lang, arg);
-            case "test", "tests" -> PromptBuilder.generateTests(code, lang, arg.isEmpty() ? null : arg);
+            case "test", "tests" -> PromptBuilder.generateTests(code, lang, testFramework(arg));
             case "doc"      -> PromptBuilder.generateDocComment(code, lang);
             default         -> PromptBuilder.commitMessage(getGitDiff());
         }, isCodeResp ? ctx : null, false);
@@ -796,9 +832,77 @@ public class LLMChatPanel extends JPanel {
 
     // ── Message rendering ─────────────────────────────────────────────────────
 
+    private static String testFramework(String asked) {
+        if (!asked.isEmpty()) return asked;
+        String configured = LLMCopilotSettings.getInstance().getTestFramework();
+        return configured == null || configured.isBlank() ? null : configured;
+    }
+
     private void appendUserBubble(String text) {
-        JPanel bubble = makeBubble(text, "YOU", COL_USER_BG, COL_USER_FG, FlowLayout.RIGHT);
-        addMessage(bubble);
+        appendUserBubble(text, null);
+    }
+
+    /**
+     * A question in the conversation. With {@code raw} — what the user typed —
+     * it can also be edited: Edit puts it back in the input box and drops it and
+     * everything after it, the history included.
+     */
+    private void appendUserBubble(String text, String raw) {
+        int mark = history.size();
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        actions.setOpaque(false);
+        JPanel[] bubble = { null };
+        actions.add(linkButton("Copy", "Copy this message", () ->
+            java.awt.Toolkit.getDefaultToolkit().getSystemClipboard()
+                .setContents(new java.awt.datatransfer.StringSelection(raw != null ? raw : text), null)));
+        if (raw != null) {
+            actions.add(linkButton("Edit", "Edit and send again — the replies after it are removed", () -> {
+                if (!running) rewindTo(bubble[0], mark, raw);
+            }));
+        }
+        bubble[0] = makeBubble(text, "YOU", COL_USER_BG, COL_USER_FG, FlowLayout.RIGHT, actions);
+        bubble[0].putClientProperty(QUESTION, Boolean.TRUE);
+        addMessage(bubble[0]);
+    }
+
+    private static final String QUESTION = "llmCopilot.question";
+
+    private static JButton linkButton(String text, String tooltip, Runnable action) {
+        JButton b = new JButton(text);
+        b.setToolTipText(tooltip);
+        b.setBorderPainted(false);
+        b.setContentAreaFilled(false);
+        b.setFocusPainted(false);
+        b.setMargin(JBUI.emptyInsets());
+        b.setFont(b.getFont().deriveFont(9f));
+        b.setForeground(new Color(40, 90, 180));
+        b.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        b.addActionListener(e -> action.run());
+        return b;
+    }
+
+    private void rewindTo(Component bubble, int mark, String raw) {
+        int at = indexOf(bubble);
+        if (at < 0) return;
+        conversation.incrementAndGet();
+        while (history.size() > mark) history.remove(history.size() - 1);
+        while (messagesPanel.getComponentCount() > at) messagesPanel.remove(at);
+        messagesPanel.revalidate();
+        messagesPanel.repaint();
+        inputArea.setText(raw);
+        inputArea.requestFocusInWindow();
+    }
+
+    /** Scrolls to the question above or below the top of the view. */
+    private void jumpTurn(int direction) {
+        int top = scrollPane.getViewport().getViewPosition().y;
+        Component target = null;
+        for (Component c : messagesPanel.getComponents()) {
+            if (!(c instanceof JComponent j) || j.getClientProperty(QUESTION) == null) continue;
+            if (direction < 0 && c.getY() < top - 4) target = c;
+            if (direction > 0 && c.getY() > top + 4) { target = c; break; }
+        }
+        if (target != null) scrollPane.getVerticalScrollBar().setValue(target.getY());
     }
 
     private void appendSystemMessage(String text) {
@@ -872,6 +976,10 @@ public class LLMChatPanel extends JPanel {
     // ── Bubble factory ────────────────────────────────────────────────────────
 
     private JPanel makeBubble(String text, String label, Color bg, Color fg, int align) {
+        return makeBubble(text, label, bg, fg, align, null);
+    }
+
+    private JPanel makeBubble(String text, String label, Color bg, Color fg, int align, JComponent actions) {
         JTextPane body = new JTextPane();
 
         MessageBubble inner = new MessageBubble(body);
@@ -884,7 +992,15 @@ public class LLMChatPanel extends JPanel {
             JLabel lbl = new JLabel(label);
             lbl.setFont(lbl.getFont().deriveFont(Font.BOLD, 9f));
             lbl.setForeground(fg.darker());
-            inner.add(lbl, BorderLayout.NORTH);
+            if (actions == null) {
+                inner.add(lbl, BorderLayout.NORTH);
+            } else {
+                JPanel header = new JPanel(new BorderLayout(8, 0));
+                header.setOpaque(false);
+                header.add(lbl, BorderLayout.WEST);
+                header.add(actions, BorderLayout.EAST);
+                inner.add(header, BorderLayout.NORTH);
+            }
         }
 
         body.setEditable(false);
@@ -980,6 +1096,7 @@ public class LLMChatPanel extends JPanel {
 
     private void clearAll() {
         cancelled.set(true);
+        conversation.incrementAndGet();
         history.clear();
         messagesPanel.removeAll();
         messagesPanel.revalidate();

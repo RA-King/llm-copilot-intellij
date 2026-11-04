@@ -23,6 +23,8 @@ public class LLMClient {
 
     private static final Gson GSON = new Gson();
 
+    private static final String ANTHROPIC_DEFAULT_MODEL = "claude-sonnet-5-5";
+
     public record ChatMessage(String role, String content) {}
 
     // ── Claude Code endpoint discovery cache ─────────────────────────────────
@@ -66,7 +68,7 @@ public class LLMClient {
 
     public static String chat(List<ChatMessage> messages, int maxTokens) throws Exception {
         LLMCopilotSettings s = LLMCopilotSettings.getInstance();
-        int cap = Math.max(1, Math.min(maxTokens, maxTokens));
+        int cap = Math.max(1, maxTokens);
         return switch (s.getProvider()) {
             case "ollama"     -> ollamaChat(messages, s, cap);
             case "anthropic"  -> anthropicChat(messages, s, cap);
@@ -170,6 +172,7 @@ public class LLMClient {
                 body.addProperty("stream", true);
                 JsonObject opts = new JsonObject();
                 opts.addProperty("temperature", s.getTemperature());
+                opts.addProperty("num_predict", maxTokens);
                 body.add("options", opts);
                 return new StreamTarget(s.getBaseUrl().replaceAll("/$", "") + "/api/chat", GSON.toJson(body),
                     Map.of(), StreamDecoder.Framing.NDJSON, StreamDecoder.Dialect.OLLAMA);
@@ -192,7 +195,7 @@ public class LLMClient {
                 JsonObject body = GSON.fromJson(buildOpenAIBody(messages, maxTokens, "", s.getTemperature()), JsonObject.class);
                 body.remove("model");
                 body.addProperty("stream", true);
-                return new StreamTarget(s.getBaseUrl().replaceAll("/$", "") + "/chat/completions?api-version=2024-12-01-preview",
+                return new StreamTarget(s.getBaseUrl().replaceAll("/$", "") + "/chat/completions?api-version=" + s.getAzureApiVersion(),
                     GSON.toJson(body), Map.of("api-key", s.getApiKey()), sse, openai);
             }
             case "claudecode":
@@ -264,7 +267,8 @@ public class LLMClient {
                 results.add("   → Set baseUrl to http://localhost:" + port);
                 results.add("   → Set claudeCodeApiPath to " + path);
             } catch (Exception e) {
-                results.add("❌ PORT " + port + "  " + path + ": " + e.getMessage().substring(0, Math.min(60, e.getMessage().length())));
+                String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                results.add("❌ PORT " + port + "  " + path + ": " + why.substring(0, Math.min(60, why.length())));
             }
         }
         return results;
@@ -301,8 +305,7 @@ public class LLMClient {
             "x-api-key", s.getApiKey(),
             "anthropic-version", "2023-06-01"
         ));
-        JsonObject resp = GSON.fromJson(raw, JsonObject.class);
-        return resp.getAsJsonArray("content").get(0).getAsJsonObject().get("text").getAsString();
+        return anthropicText(GSON.fromJson(raw, JsonObject.class));
     }
 
     private static String mistralChat(List<ChatMessage> messages, LLMCopilotSettings s, int maxTokens) throws Exception {
@@ -347,7 +350,7 @@ public class LLMClient {
     // apiKey  = Azure API key
     private static String azureChat(List<ChatMessage> messages, LLMCopilotSettings s, int maxTokens) throws Exception {
         String base = s.getBaseUrl().replaceAll("/$", "");
-        String url  = base + "/chat/completions?api-version=2024-12-01-preview";
+        String url  = base + "/chat/completions?api-version=" + s.getAzureApiVersion();
         // Azure: model is part of the URL (deployment), not the body
         JsonObject body = new JsonObject();
         body.addProperty("max_tokens", maxTokens);
@@ -385,18 +388,19 @@ public class LLMClient {
         ClaudeEndpoint ep = discoverClaudeEndpoint(s);
         String host = extractHost(s.getBaseUrl());
         String url  = "http://" + host + ":" + ep.port() + ep.path();
-        String body = buildClaudeBody(messages, Math.max(maxTokens, 2048), s.getModel(), ep.isAnthropic());
+        String body = buildClaudeBody(messages, maxTokens, s.getModel(), ep.isAnthropic());
         Map<String,String> hdrs = ep.isAnthropic() ? Map.of("anthropic-version","2023-06-01") : Map.of();
         try {
             String raw = httpPost(url, body, hdrs);
             return extractContent(raw);
         } catch (Exception e) {
-            if (e.getMessage() != null && e.getMessage().contains("405")) {
+            // The proxy moved or restarted on another port: find it again, once.
+            if (e.getMessage() != null && e.getMessage().matches("(?s)HTTP (404|405|501).*")) {
                 // Clear cache and retry once
                 cachedEndpoint.set(null); cachedBaseUrl = "";
                 ClaudeEndpoint ep2 = discoverClaudeEndpoint(s);
                 String url2  = "http://" + host + ":" + ep2.port() + ep2.path();
-                String body2 = buildClaudeBody(messages, Math.max(maxTokens, 2048), s.getModel(), ep2.isAnthropic());
+                String body2 = buildClaudeBody(messages, maxTokens, s.getModel(), ep2.isAnthropic());
                 Map<String,String> hdrs2 = ep2.isAnthropic() ? Map.of("anthropic-version","2023-06-01") : Map.of();
                 return extractContent(httpPost(url2, body2, hdrs2));
             }
@@ -421,7 +425,7 @@ public class LLMClient {
 
         String host = extractHost(s.getBaseUrl());
         int configuredPort = extractPort(s.getBaseUrl(), 3000);
-        String model = s.getModel().isEmpty() ? "claude-opus-4-5" : s.getModel();
+        String model = s.getModel().isEmpty() ? "claude-opus-5-5" : s.getModel();
 
         // Try configured port first
         for (Object[] c : CLAUDE_CANDIDATES) {
@@ -449,7 +453,7 @@ public class LLMClient {
 
         throw new Exception(
             "Claude Code proxy not found on " + host + ". " +
-            "Tried ports: 3000, 3456, 8000, 4141, 8082, 8080, 1234. " +
+            "Tried ports: 3000, 3456, 8000, 4141, 8082, 8080, 1234, 11435. " +
             "Run 'LLM Copilot: Diagnose Claude Code' or set claudeCodeApiPath manually."
         );
     }
@@ -486,7 +490,7 @@ public class LLMClient {
 
     private static String buildAnthropicBody(List<ChatMessage> messages, int maxTokens, String model, double temp) {
         JsonObject body = new JsonObject();
-        body.addProperty("model", model.isEmpty() ? "claude-3-5-sonnet-20241022" : model);
+        body.addProperty("model", model.isEmpty() ? ANTHROPIC_DEFAULT_MODEL : model);
         body.addProperty("max_tokens", maxTokens);
         // System message as content block array (strict Anthropic format)
         StringBuilder sys = new StringBuilder();
@@ -513,27 +517,45 @@ public class LLMClient {
     private static String buildClaudeBody(List<ChatMessage> messages, int maxTokens, String model, boolean isAnthropic) {
         if (isAnthropic) {
             return buildAnthropicBody(messages, maxTokens,
-                model.isEmpty() ? "claude-opus-4-5" : model, 0.2);
+                model.isEmpty() ? "claude-opus-5-5" : model, 0.2);
         } else {
             return buildOpenAIBody(messages, maxTokens,
-                model.isEmpty() ? "claude-opus-4-5" : model, 0.2);
+                model.isEmpty() ? "claude-opus-5-5" : model, 0.2);
         }
     }
 
     // ── Response parsers ──────────────────────────────────────────────────────
 
-    private static String extractOpenAIContent(String raw) {
+    /** The reply text; empty when the model answered with no content at all (content: null). */
+    static String extractOpenAIContent(String raw) {
         JsonObject j = GSON.fromJson(raw, JsonObject.class);
-        return j.getAsJsonArray("choices").get(0).getAsJsonObject()
-                .getAsJsonObject("message").get("content").getAsString();
+        JsonArray choices = j.getAsJsonArray("choices");
+        if (choices == null || choices.isEmpty()) return "";
+        JsonObject message = choices.get(0).getAsJsonObject().getAsJsonObject("message");
+        JsonElement content = message == null ? null : message.get("content");
+        return content == null || content.isJsonNull() ? "" : content.getAsString();
     }
 
-    private static String extractContent(String raw) {
+    /** The reply's text blocks joined; a thinking block may come first. */
+    static String anthropicText(JsonObject reply) {
+        JsonArray blocks = reply.getAsJsonArray("content");
+        if (blocks == null) return "";
+        StringBuilder text = new StringBuilder();
+        for (JsonElement b : blocks) {
+            if (!b.isJsonObject()) continue;
+            JsonObject block = b.getAsJsonObject();
+            boolean isText = block.has("type") ? "text".equals(block.get("type").getAsString()) : block.has("text");
+            if (isText && block.has("text")) text.append(block.get("text").getAsString());
+        }
+        return text.toString();
+    }
+
+    static String extractContent(String raw) {
         JsonObject j = GSON.fromJson(raw, JsonObject.class);
         if (j.has("content")) {
             JsonElement ce = j.get("content");
-            if (ce.isJsonArray()) return ce.getAsJsonArray().get(0).getAsJsonObject().get("text").getAsString();
-            return ce.getAsString();
+            if (ce.isJsonArray()) return anthropicText(j);
+            return ce.isJsonNull() ? "" : ce.getAsString();
         }
         if (j.has("choices")) return extractOpenAIContent(raw);
         return "";

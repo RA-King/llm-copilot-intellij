@@ -136,7 +136,8 @@ public final class WorkspaceTools implements AgentSession.Tools {
         Integer from = AgentProtocol.intArg(call, "start_line");
         Integer to = AgentProtocol.intArg(call, "end_line");
         int start = Math.max(1, from != null ? from : 1);
-        int end = Math.min(total, Math.min(to != null ? to : start + READ_CHUNK - 1, start + READ_CHUNK - 1));
+        // An end before the start reads one chunk from the start rather than failing.
+        int end = Math.min(total, Math.min(Math.max(start, to != null ? to : start + READ_CHUNK - 1), start + READ_CHUNK - 1));
         if (start > total) return new AgentSession.Outcome(false, rel + " has only " + total + " lines.", "Read " + rel + ": past the end");
         String text = String.join("\n", Arrays.copyOfRange(lines, start - 1, end));
         String rest = end < total ? "\n… (" + (total - end) + " more lines; read with start_line " + (end + 1) + ")" : "";

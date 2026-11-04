@@ -106,6 +106,10 @@ public class LLMCopilotSettings implements PersistentStateComponent<LLMCopilotSe
     public boolean isIntentInference()      { return myState.intentInference; }
     public void    setIntentInference(boolean v) { myState.intentInference = v; }
     public String  getTestFramework()     { return myState.testFramework; }
+    public String  getAzureApiVersion() {
+        String v = myState.azureApiVersion;
+        return v == null || v.isBlank() ? "2024-12-01-preview" : v.trim();
+    }
     public boolean isCustomInstructions()   { return myState.customInstructions; }
     public void    setCustomInstructions(boolean v) { myState.customInstructions = v; }
     public int     getAgentMaxSteps()       { return myState.agentMaxSteps; }
