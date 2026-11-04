@@ -19,6 +19,7 @@ public class LLMCopilotConfigurable implements Configurable {
     private JSpinner     spnMaxTokens, spnTemperature, spnDebounce, spnErrorSolutions, spnErrorContext;
     private JSpinner     spnMinDebounce, spnStatementLines, spnBlockLines, spnMinIdentifier, spnNextEditDebounce;
     private JSpinner     spnIndexMaxFiles, spnIndexMaxFileKb, spnProjectChars;
+    private JSpinner     spnAgentSteps, spnAgentTimeout;
     private ComboBox<String> cmbProvider;
 
     private static final String[] PROVIDERS = {
@@ -84,6 +85,8 @@ public class LLMCopilotConfigurable implements Configurable {
           + "something renamed, a call site of a changed signature — and show it in place. Tab jumps to it, "
           + "Tab again applies it, Escape dismisses it. Each pause after an edit costs one request.</html>");
         spnNextEditDebounce = new JSpinner(new SpinnerNumberModel(800, 200, 5000, 100));
+        spnAgentSteps       = new JSpinner(new SpinnerNumberModel(25, 3, 100, 1));
+        spnAgentTimeout     = new JSpinner(new SpinnerNumberModel(120, 5, 1800, 5));
 
         chkProjectIndex   = new JBCheckBox("Index the whole project");
         chkProjectIndex.setToolTipText(
@@ -120,6 +123,8 @@ public class LLMCopilotConfigurable implements Configurable {
             .addComponent(chkIntentInference)
             .addComponent(chkStatusBar)
             .addComponent(chkCustomInstructions)
+            .addLabeledComponent("Agent step limit:",        spnAgentSteps)
+            .addLabeledComponent("Agent command timeout (s):", spnAgentTimeout)
             .addSeparator()
             .addComponent(new JBLabel("<html><b>Ghost text</b></html>"))
             .addComponent(chkAdaptiveDebounce)
@@ -182,6 +187,8 @@ public class LLMCopilotConfigurable implements Configurable {
             || st.nextEditDebounceMs   != (int) spnNextEditDebounce.getValue()
             || st.projectIndexEnabled  != chkProjectIndex.isSelected()
             || st.customInstructions   != chkCustomInstructions.isSelected()
+            || st.agentMaxSteps        != (int) spnAgentSteps.getValue()
+            || st.agentCommandTimeoutSeconds != (int) spnAgentTimeout.getValue()
             || st.projectIndexMaxFiles != (int) spnIndexMaxFiles.getValue()
             || st.projectIndexMaxFileKb != (int) spnIndexMaxFileKb.getValue()
             || st.projectCompletionChars != (int) spnProjectChars.getValue()
@@ -219,6 +226,8 @@ public class LLMCopilotConfigurable implements Configurable {
         st.nextEditDebounceMs   = (int) spnNextEditDebounce.getValue();
         st.projectIndexEnabled  = chkProjectIndex.isSelected();
         st.customInstructions   = chkCustomInstructions.isSelected();
+        st.agentMaxSteps        = (int) spnAgentSteps.getValue();
+        st.agentCommandTimeoutSeconds = (int) spnAgentTimeout.getValue();
         st.projectIndexMaxFiles = (int) spnIndexMaxFiles.getValue();
         st.projectIndexMaxFileKb = (int) spnIndexMaxFileKb.getValue();
         st.projectCompletionChars = (int) spnProjectChars.getValue();
@@ -256,6 +265,8 @@ public class LLMCopilotConfigurable implements Configurable {
         spnNextEditDebounce.setValue(st.nextEditDebounceMs);
         chkProjectIndex.setSelected(st.projectIndexEnabled);
         chkCustomInstructions.setSelected(st.customInstructions);
+        spnAgentSteps.setValue(st.agentMaxSteps);
+        spnAgentTimeout.setValue(st.agentCommandTimeoutSeconds);
         spnIndexMaxFiles.setValue(st.projectIndexMaxFiles);
         spnIndexMaxFileKb.setValue(st.projectIndexMaxFileKb);
         spnProjectChars.setValue(st.projectCompletionChars);
