@@ -113,6 +113,15 @@ class AgentProtocolTest {
         assertEquals("search is empty", AgentProtocol.findUnique(TEXT, "").error());
     }
 
+    @Test void findUniqueTakesATrailingNewlineInTheQuoteAsTheEndOfItsLastLine() {
+        String file = "x = 1;  \ny = 2;\nz = 3;\n";
+        AgentProtocol.Match m = AgentProtocol.findUnique(file, "x = 1;\ny = 2;\n");
+        assertNull(m.error());
+        assertEquals(0, m.start());
+        assertEquals(16, m.end());
+        assertEquals("w = 0;\nz = 3;\n", file.substring(0, m.start()) + "w = 0;\n" + file.substring(m.end()));
+    }
+
     @Test void safeRelativePathNormalisesPathsInsideTheWorkspace() {
         assertEquals("src/b.ts", AgentProtocol.safeRelativePath("./src//a/../b.ts", null));
         assertEquals("src/a.ts", AgentProtocol.safeRelativePath("/repo/src/a.ts", "/repo"));

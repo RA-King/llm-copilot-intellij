@@ -40,6 +40,19 @@ class CustomInstructionsTest {
         assertTrue(CustomInstructions.globToPattern("**/*.{js,jsx}").matcher("app/x.jsx").matches());
     }
 
+    @Test void keepsABraceListInOneGlob() {
+        assertEquals(List.of("**/*.{ts,tsx}", "docs/**"), CustomInstructions.splitGlobs("**/*.{ts,tsx}, docs/**"));
+        assertTrue(CustomInstructions.globToPattern(CustomInstructions.splitGlobs("**/*.{ts,tsx}").get(0))
+            .matcher("src/view.tsx").matches());
+    }
+
+    @Test void readsWildcardsInsideABraceList() {
+        var glob = CustomInstructions.globToPattern("src/{*.ts,lib/**}");
+        assertTrue(glob.matcher("src/a.ts").matches());
+        assertTrue(glob.matcher("src/lib/x/y.js").matches());
+        assertFalse(glob.matcher("src/a.js").matches());
+    }
+
     private static final List<InstructionFile> FILES = List.of(
         new InstructionFile(".github/instructions/py.instructions.md", List.of("**/*.py"), "Use type hints."),
         new InstructionFile(".github/copilot-instructions.md", List.of(), "Prefer small functions."));

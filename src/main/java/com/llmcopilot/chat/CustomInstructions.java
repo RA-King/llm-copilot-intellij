@@ -63,15 +63,42 @@ public final class CustomInstructions {
     public static List<String> splitGlobs(String value) {
         if (value == null || value.isBlank()) return List.of();
         List<String> out = new ArrayList<>();
-        for (String part : value.replaceAll("^\\[|]$", "").split(",")) {
+        for (String part : splitTopLevel(value.replaceAll("^\\[|]$", ""))) {
             String glob = unquote(part.trim());
             if (!glob.isEmpty()) out.add(glob);
         }
         return out;
     }
 
+    /** Splits on commas outside braces, so a brace list stays in one glob. */
+    private static List<String> splitTopLevel(String value) {
+        List<String> parts = new ArrayList<>();
+        int depth = 0, start = 0;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == '{') depth++;
+            else if (c == '}' && depth > 0) depth--;
+            else if (c == ',' && depth == 0) { parts.add(value.substring(start, i)); start = i + 1; }
+        }
+        parts.add(value.substring(start));
+        return parts;
+    }
+
+    private static int closingBrace(String glob, int open) {
+        int depth = 0;
+        for (int i = open; i < glob.length(); i++) {
+            if (glob.charAt(i) == '{') depth++;
+            else if (glob.charAt(i) == '}' && --depth == 0) return i;
+        }
+        return -1;
+    }
+
     /** A minimal glob: {@code **} crosses directories, {@code *} and {@code ?} do not, {@code {a,b}} alternates. */
     public static Pattern globToPattern(String glob) {
+        return Pattern.compile(globSource(glob));
+    }
+
+    private static String globSource(String glob) {
         StringBuilder out = new StringBuilder();
         for (int i = 0; i < glob.length(); i++) {
             char c = glob.charAt(i);
@@ -86,17 +113,18 @@ public final class CustomInstructions {
             } else if (c == '?') {
                 out.append("[^/]");
             } else if (c == '{') {
-                int end = glob.indexOf('}', i);
+                int end = closingBrace(glob, i);
                 if (end < 0) { out.append("\\{"); continue; }
+                // Each alternative is a glob of its own: {*.ts,*.tsx} is two patterns, not two literals.
                 StringJoiner alternatives = new StringJoiner("|", "(?:", ")");
-                for (String alt : glob.substring(i + 1, end).split(",")) alternatives.add(Pattern.quote(alt));
+                for (String alt : splitTopLevel(glob.substring(i + 1, end))) alternatives.add(globSource(alt));
                 out.append(alternatives);
                 i = end;
             } else {
                 out.append(Pattern.quote(String.valueOf(c)));
             }
         }
-        return Pattern.compile(out.toString());
+        return out.toString();
     }
 
     public static boolean appliesTo(InstructionFile file, String relPath) {

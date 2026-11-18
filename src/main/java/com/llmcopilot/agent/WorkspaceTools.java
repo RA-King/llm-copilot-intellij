@@ -14,12 +14,15 @@ import com.llmcopilot.chat.CustomInstructions;
 import com.llmcopilot.index.ProjectIndexService;
 import com.llmcopilot.review.CodeReview;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
@@ -40,6 +43,7 @@ public final class WorkspaceTools implements AgentSession.Tools {
         "node_modules", ".git", "out", "dist", "build", "target", ".venv", "venv", "__pycache__",
         ".next", "coverage", ".gradle", ".idea");
     private static final int READ_CHUNK = 400;
+    private static final int MAX_OUTPUT = 4 * 1024 * 1024;
 
     private final Project project;
     private final Path root;
@@ -292,6 +296,8 @@ public final class WorkspaceTools implements AgentSession.Tools {
             return new AgentSession.Outcome(false,
                 "The user chose not to run this command. Carry on without it, or finish and explain what is left.", "Skipped: " + command);
         }
+        // Stopped while the approval was open: the command must not start.
+        if (cancelled.getAsBoolean()) return new AgentSession.Outcome(false, "Stopped.", "Ran " + command + " — stopped");
 
         boolean windows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
         ProcessBuilder pb = windows ? new ProcessBuilder("cmd.exe", "/c", command) : new ProcessBuilder("/bin/sh", "-c", command);
@@ -299,10 +305,19 @@ public final class WorkspaceTools implements AgentSession.Tools {
         pb.environment().put("CI", "1");
         Process proc = pb.start();
 
-        StringBuilder output = new StringBuilder();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        AtomicBoolean clipped = new AtomicBoolean();
         Thread reader = new Thread(() -> {
-            try { output.append(new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8)); }
-            catch (IOException ignored) { }
+            byte[] buf = new byte[8192];
+            try (InputStream in = proc.getInputStream()) {
+                for (int n; (n = in.read(buf)) >= 0; ) {
+                    synchronized (output) {
+                        int room = MAX_OUTPUT - output.size();
+                        if (n > room) clipped.set(true);
+                        if (room > 0) output.write(buf, 0, Math.min(n, room));
+                    }
+                }
+            } catch (IOException ignored) { }
         }, "llm-agent-command");
         reader.setDaemon(true);
         reader.start();
@@ -319,7 +334,10 @@ public final class WorkspaceTools implements AgentSession.Tools {
         }
         reader.join(2000);
         int code = proc.isAlive() ? -1 : proc.exitValue();
-        String text = output.length() == 0 ? "(no output)" : output.toString();
+        String text;
+        synchronized (output) { text = output.toString(StandardCharsets.UTF_8); }
+        if (clipped.get()) text += "\n… (output cut off)";
+        if (text.isBlank()) text = "(no output)";
         return new AgentSession.Outcome(code == 0,
             (timedOut ? "Stopped after " + commandTimeoutSeconds + "s.\n" : "") + "Exit code " + code + "\n" + text,
             "Ran " + command + " — " + (timedOut ? "timed out" : "exit " + code));

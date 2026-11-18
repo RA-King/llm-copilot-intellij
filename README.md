@@ -179,7 +179,7 @@ the `applyTo` globs in their header:
 
 ```markdown
 ---
-applyTo: "**/*.kt, buildSrc/**"
+applyTo: "**/*.{kt,kts}, buildSrc/**"
 ---
 Prefer data classes and sealed hierarchies. No platform types in public APIs.
 ```
@@ -538,7 +538,7 @@ first use, cached afterwards. This is how CI builds.
 ./gradlew test
 ```
 
-383 unit tests cover the logic that does not need a running IDE:
+386 unit tests cover the logic that does not need a running IDE:
 
 | Suite | What it pins down |
 |---|---|
