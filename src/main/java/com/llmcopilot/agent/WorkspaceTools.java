@@ -13,6 +13,7 @@ import com.llmcopilot.actions.ProblemsAtCaret;
 import com.llmcopilot.chat.CustomInstructions;
 import com.llmcopilot.index.ProjectIndexService;
 import com.llmcopilot.review.CodeReview;
+import com.llmcopilot.review.SecretScan;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -259,7 +260,9 @@ public final class WorkspaceTools implements AgentSession.Tools {
 
         int removed = text.substring(match.start(), match.end()).split("\n", -1).length;
         int added = replace.split("\n", -1).length;
-        return new AgentSession.Outcome(true, "Edited " + rel + ".", "Edited " + rel + " (+" + added + " −" + removed + ")");
+        int firstLine = (int) text.substring(0, match.start()).chars().filter(c -> c == '\n').count() + 1;
+        return withSecretWarning(rel, replace, firstLine,
+            new AgentSession.Outcome(true, "Edited " + rel + ".", "Edited " + rel + " (+" + added + " −" + removed + ")"));
     }
 
     private AgentSession.Outcome createFile(AgentProtocol.ToolCall call) throws IOException {
@@ -270,8 +273,20 @@ public final class WorkspaceTools implements AgentSession.Tools {
         if (!originals.containsKey(rel)) originals.put(rel, existed ? Files.readString(path, StandardCharsets.UTF_8) : null);
         write(path, content);
         int lines = content.split("\n", -1).length;
-        return new AgentSession.Outcome(true, (existed ? "Overwrote " : "Created ") + rel + ".",
-            (existed ? "Rewrote " : "Created ") + rel + " (" + lines + " lines)");
+        return withSecretWarning(rel, content, 1, new AgentSession.Outcome(true, (existed ? "Overwrote " : "Created ") + rel + ".",
+            (existed ? "Rewrote " : "Created ") + rel + " (" + lines + " lines)"));
+    }
+
+    /** Tells the model, and the user, when what it just wrote looks like a credential. */
+    static AgentSession.Outcome withSecretWarning(String rel, String written, int firstLine, AgentSession.Outcome outcome) {
+        List<SecretScan.Finding> secrets = SecretScan.scanText(written, firstLine);
+        if (secrets.isEmpty()) return outcome;
+        StringJoiner lines = new StringJoiner("\n");
+        for (SecretScan.Finding f : secrets) lines.add(rel + ":" + f.line() + ": possible " + f.kind() + " (" + f.preview() + ")");
+        return new AgentSession.Outcome(outcome.ok(),
+            outcome.output() + "\nWarning — this writes what looks like a secret into the code:\n" + lines
+                + "\nUnless the user asked for exactly this, read it from configuration or an environment variable instead.",
+            outcome.summary() + " — possible secret on line " + secrets.get(0).line());
     }
 
     /** Writes through the open document when there is one, so the editor and the disk agree. */
