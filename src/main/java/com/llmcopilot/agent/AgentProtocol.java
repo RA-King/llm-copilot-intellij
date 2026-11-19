@@ -6,6 +6,7 @@ import com.google.gson.JsonParser;
 import com.llmcopilot.services.LLMClient.ChatMessage;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -198,6 +199,9 @@ public final class AgentProtocol {
         String[] lines = text.split("\n", -1);
         String[] wanted = search.replace("\r\n", "\n").split("\n", -1);
         for (int i = 0; i < wanted.length; i++) wanted[i] = wanted[i].stripTrailing();
+        // A quote ending in a newline means "up to the end of that line", not "and then a blank line".
+        boolean throughNewline = wanted.length > 1 && wanted[wanted.length - 1].isEmpty();
+        if (throughNewline) wanted = Arrays.copyOf(wanted, wanted.length - 1);
         int[] offsets = new int[lines.length];
         for (int i = 0, o = 0; i < lines.length; i++) { offsets[i] = o; o += lines[i].length() + 1; }
 
@@ -211,7 +215,9 @@ public final class AgentProtocol {
         }
         if (hits.size() == 1) {
             int last = hits.get(0) + wanted.length - 1;
-            return new Match(offsets[hits.get(0)], offsets[last] + lines[last].replaceFirst("\r$", "").length(), null);
+            int end = throughNewline && last + 1 < lines.length
+                ? offsets[last + 1] : offsets[last] + lines[last].replaceFirst("\r$", "").length();
+            return new Match(offsets[hits.get(0)], end, null);
         }
         if (hits.size() > 1) {
             return new Match(-1, -1, "search matches " + hits.size() + " places; include more surrounding lines so it matches one");

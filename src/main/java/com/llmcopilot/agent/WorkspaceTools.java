@@ -13,13 +13,17 @@ import com.llmcopilot.actions.ProblemsAtCaret;
 import com.llmcopilot.chat.CustomInstructions;
 import com.llmcopilot.index.ProjectIndexService;
 import com.llmcopilot.review.CodeReview;
+import com.llmcopilot.review.SecretScan;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
@@ -40,6 +44,7 @@ public final class WorkspaceTools implements AgentSession.Tools {
         "node_modules", ".git", "out", "dist", "build", "target", ".venv", "venv", "__pycache__",
         ".next", "coverage", ".gradle", ".idea");
     private static final int READ_CHUNK = 400;
+    private static final int MAX_OUTPUT = 4 * 1024 * 1024;
 
     private final Project project;
     private final Path root;
@@ -255,7 +260,9 @@ public final class WorkspaceTools implements AgentSession.Tools {
 
         int removed = text.substring(match.start(), match.end()).split("\n", -1).length;
         int added = replace.split("\n", -1).length;
-        return new AgentSession.Outcome(true, "Edited " + rel + ".", "Edited " + rel + " (+" + added + " −" + removed + ")");
+        int firstLine = (int) text.substring(0, match.start()).chars().filter(c -> c == '\n').count() + 1;
+        return withSecretWarning(rel, replace, firstLine,
+            new AgentSession.Outcome(true, "Edited " + rel + ".", "Edited " + rel + " (+" + added + " −" + removed + ")"));
     }
 
     private AgentSession.Outcome createFile(AgentProtocol.ToolCall call) throws IOException {
@@ -266,8 +273,20 @@ public final class WorkspaceTools implements AgentSession.Tools {
         if (!originals.containsKey(rel)) originals.put(rel, existed ? Files.readString(path, StandardCharsets.UTF_8) : null);
         write(path, content);
         int lines = content.split("\n", -1).length;
-        return new AgentSession.Outcome(true, (existed ? "Overwrote " : "Created ") + rel + ".",
-            (existed ? "Rewrote " : "Created ") + rel + " (" + lines + " lines)");
+        return withSecretWarning(rel, content, 1, new AgentSession.Outcome(true, (existed ? "Overwrote " : "Created ") + rel + ".",
+            (existed ? "Rewrote " : "Created ") + rel + " (" + lines + " lines)"));
+    }
+
+    /** Tells the model, and the user, when what it just wrote looks like a credential. */
+    static AgentSession.Outcome withSecretWarning(String rel, String written, int firstLine, AgentSession.Outcome outcome) {
+        List<SecretScan.Finding> secrets = SecretScan.scanText(written, firstLine);
+        if (secrets.isEmpty()) return outcome;
+        StringJoiner lines = new StringJoiner("\n");
+        for (SecretScan.Finding f : secrets) lines.add(rel + ":" + f.line() + ": possible " + f.kind() + " (" + f.preview() + ")");
+        return new AgentSession.Outcome(outcome.ok(),
+            outcome.output() + "\nWarning — this writes what looks like a secret into the code:\n" + lines
+                + "\nUnless the user asked for exactly this, read it from configuration or an environment variable instead.",
+            outcome.summary() + " — possible secret on line " + secrets.get(0).line());
     }
 
     /** Writes through the open document when there is one, so the editor and the disk agree. */
@@ -292,6 +311,8 @@ public final class WorkspaceTools implements AgentSession.Tools {
             return new AgentSession.Outcome(false,
                 "The user chose not to run this command. Carry on without it, or finish and explain what is left.", "Skipped: " + command);
         }
+        // Stopped while the approval was open: the command must not start.
+        if (cancelled.getAsBoolean()) return new AgentSession.Outcome(false, "Stopped.", "Ran " + command + " — stopped");
 
         boolean windows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
         ProcessBuilder pb = windows ? new ProcessBuilder("cmd.exe", "/c", command) : new ProcessBuilder("/bin/sh", "-c", command);
@@ -299,10 +320,19 @@ public final class WorkspaceTools implements AgentSession.Tools {
         pb.environment().put("CI", "1");
         Process proc = pb.start();
 
-        StringBuilder output = new StringBuilder();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        AtomicBoolean clipped = new AtomicBoolean();
         Thread reader = new Thread(() -> {
-            try { output.append(new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8)); }
-            catch (IOException ignored) { }
+            byte[] buf = new byte[8192];
+            try (InputStream in = proc.getInputStream()) {
+                for (int n; (n = in.read(buf)) >= 0; ) {
+                    synchronized (output) {
+                        int room = MAX_OUTPUT - output.size();
+                        if (n > room) clipped.set(true);
+                        if (room > 0) output.write(buf, 0, Math.min(n, room));
+                    }
+                }
+            } catch (IOException ignored) { }
         }, "llm-agent-command");
         reader.setDaemon(true);
         reader.start();
@@ -319,7 +349,10 @@ public final class WorkspaceTools implements AgentSession.Tools {
         }
         reader.join(2000);
         int code = proc.isAlive() ? -1 : proc.exitValue();
-        String text = output.length() == 0 ? "(no output)" : output.toString();
+        String text;
+        synchronized (output) { text = output.toString(StandardCharsets.UTF_8); }
+        if (clipped.get()) text += "\n… (output cut off)";
+        if (text.isBlank()) text = "(no output)";
         return new AgentSession.Outcome(code == 0,
             (timedOut ? "Stopped after " + commandTimeoutSeconds + "s.\n" : "") + "Exit code " + code + "\n" + text,
             "Ran " + command + " — " + (timedOut ? "timed out" : "exit " + code));

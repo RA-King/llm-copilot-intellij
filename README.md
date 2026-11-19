@@ -142,6 +142,7 @@ Replies stream into the chat as the model writes them, and **Send** turns into
 Each of your own messages has **Copy** and **Edit**: Edit puts the question back in
 the input box and drops the replies after it, so the conversation carries on from
 the corrected question. **↑ ↓** beside the mode picker jump between your questions.
+Every message shows the time it was sent; hover for the date.
 Slash commands work on the selection: `/fix`, `/explain`, `/refactor <how>`,
 `/test [framework]`, `/doc`, `/optimize`, `/new <what>`, `/agent <task>`, `/commit`,
 `/clear` and `/help`. References pull material into any question, typed anywhere in it:
@@ -166,7 +167,9 @@ first**: *Run*, *Always Run This* (for the rest of the session), or *Skip*. Edit
 through the editor's documents and are saved as it goes, so a test it runs sees them.
 When it finishes, a panel lists every file it touched, with **Diff** against how
 each file was before and **Undo all** to put them back, deleting any it created.
-**Stop** ends the run at once. Tool calls are plain tagged blocks rather than a
+**Stop** ends the run at once. If the agent writes something that looks like a key,
+token or password into a file, the step says so and the agent is told to read it
+from configuration instead. Tool calls are plain tagged blocks rather than a
 provider's function calling, so it works with every provider, though larger models
 follow it far more reliably than small local ones. The step limit (25) and the
 command timeout (120 s) are in the settings.
@@ -179,7 +182,7 @@ the `applyTo` globs in their header:
 
 ```markdown
 ---
-applyTo: "**/*.kt, buildSrc/**"
+applyTo: "**/*.{kt,kts}, buildSrc/**"
 ---
 Prefer data classes and sealed hierarchies. No platform types in public APIs.
 ```
@@ -200,7 +203,12 @@ in the chat window.
 selection or, with nothing selected, the whole file; **Tools → LLM Copilot:
 Review Uncommitted Changes** reviews every staged and unstaged change. Comments
 come back as a list — severity, file, line and what to do — and choosing one
-jumps to the line.
+jumps to the line. Both reviews also scan for **secrets**: cloud and API keys (AWS,
+GitHub, GitLab, OpenAI, Anthropic, Google, Slack, Stripe, npm, Hugging Face,
+SendGrid), private keys, tokens, and passwords assigned in code or held in a
+connection string. For uncommitted changes only added lines are scanned, but every
+one of them, however large the diff. Each hit is an error with the value masked;
+placeholders such as `changeme` or `${DB_PASSWORD}` are left alone.
 
 **Commits and pull requests.** **Generate Commit Message** sits on the commit
 message toolbar and writes straight into the commit box. **Tools → LLM Copilot:
@@ -538,7 +546,7 @@ first use, cached afterwards. This is how CI builds.
 ./gradlew test
 ```
 
-383 unit tests cover the logic that does not need a running IDE:
+393 unit tests cover the logic that does not need a running IDE:
 
 | Suite | What it pins down |
 |---|---|
@@ -565,6 +573,7 @@ first use, cached afterwards. This is how CI builds.
 | `LLMClientTest` | Reading non-streamed replies: Anthropic text blocks after a thinking block, and OpenAI replies whose content is null or missing. |
 | `StreamDecoderTest` | Lines split across chunks, SSE and NDJSON framing, and OpenAI, Anthropic and Ollama deltas, stop events and mid-stream errors. |
 | `CodeReviewTest` | Line numbering, diffs rewritten with new-file line numbers, and reading findings back in their common variations. |
+| `SecretScanTest` | Provider key formats, passwords in code and connection strings, placeholders left alone, masking, and only added diff lines scanned at their new line numbers. |
 | `AssistPromptsTest` | The problem-fix window, code-block extraction, terminal suggestions and pull request prompts. |
 
 Editor-dependent code is tested through `FakeEditor`, a helper that stubs the few

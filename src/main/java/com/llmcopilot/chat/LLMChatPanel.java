@@ -32,6 +32,9 @@ import javax.swing.*;
 import javax.swing.text.*;
 import java.awt.*;
 import java.awt.event.*;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.FormatStyle;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.*;
@@ -989,7 +992,9 @@ public class LLMChatPanel extends JPanel {
             JBUI.Borders.empty(6, 10)));
 
         if (!label.isEmpty()) {
-            JLabel lbl = new JLabel(label);
+            LocalDateTime now = LocalDateTime.now();
+            JLabel lbl = new JLabel(label + "  ·  " + now.format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)));
+            lbl.setToolTipText(now.format(DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM)));
             lbl.setFont(lbl.getFont().deriveFont(Font.BOLD, 9f));
             lbl.setForeground(fg.darker());
             if (actions == null) {

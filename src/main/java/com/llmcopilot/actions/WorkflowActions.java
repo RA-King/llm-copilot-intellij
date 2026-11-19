@@ -22,6 +22,7 @@ import com.intellij.testFramework.LightVirtualFile;
 import com.intellij.ui.SimpleListCellRenderer;
 import com.llmcopilot.chat.CustomInstructions;
 import com.llmcopilot.review.CodeReview;
+import com.llmcopilot.review.SecretScan;
 import com.llmcopilot.services.AssistPrompts;
 import com.llmcopilot.services.LLMClient;
 import com.llmcopilot.util.Git;
@@ -34,6 +35,7 @@ import java.awt.datatransfer.StringSelection;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
+import java.util.stream.Stream;
 
 /**
  * The actions that work over the repository rather than the caret: code
@@ -130,9 +132,12 @@ class ReviewSelectionAction extends ReviewAction {
         String name = vf.getName();
 
         inBackground(project, "LLM Copilot: reviewing", () -> {
-            List<Located> found = CodeReview.parseFindings(
+            List<CodeReview.Finding> reviewed = CodeReview.parseFindings(
                     ask(project, CodeReview.selectionPrompt(code, language, name, firstLine + 1))).stream()
                 .filter(f -> f.line() >= firstLine + 1 && f.line() <= lastLine + 1)
+                .toList();
+            List<Located> found = Stream.concat(reviewed.stream(),
+                    SecretScan.asReviewFindings(SecretScan.scanText(code, firstLine + 1)).stream())
                 .map(f -> new Located(vf, f, label(name, f)))
                 .toList();
             show(project, found);
@@ -157,7 +162,10 @@ class ReviewChangesAction extends ReviewAction {
             String annotated = CodeReview.annotateDiff(diff);
             if (annotated.length() > 30000) annotated = annotated.substring(0, 30000);
 
-            List<Located> found = CodeReview.parseFindings(ask(project, CodeReview.changesPrompt(annotated))).stream()
+            // The model only sees the first 30,000 characters; the secret scan reads every added line.
+            List<CodeReview.Finding> reviewed = CodeReview.parseFindings(ask(project, CodeReview.changesPrompt(annotated)));
+            List<Located> found = Stream.concat(reviewed.stream(),
+                    SecretScan.asReviewFindings(SecretScan.scanDiff(diff)).stream())
                 .filter(f -> f.file() != null)
                 .map(f -> {
                     VirtualFile vf = LocalFileSystem.getInstance().findFileByNioFile(Path.of(root, f.file()));
